@@ -1,0 +1,31 @@
+# Web framework & server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Frontend
+streamlit>=1.40.0
+
+# Database (used in Step 2+)
+sqlalchemy>=2.0.36
+psycopg2-binary>=2.9.10
+alembic>=1.14.0
+
+# Authentication & security (used in Step 2+)
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.2.0
+
+# Validation & configuration
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+
+# HTTP client (frontend → backend)
+requests>=2.32.0
+
+# Docker SDK (code execution in later steps)
+docker>=7.1.0
+
+# Testing (used later)
+pytest>=8.3.0
+httpx>=0.28.0
