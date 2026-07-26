@@ -1,0 +1,30 @@
+# Local full-stack helpers for ETOZ.
+# Usage (from project root):
+#   docker compose up -d db
+#   alembic upgrade head
+#   python run_backend.py
+#   python run_frontend.py
+#
+# The API itself still runs on the host by default so the Docker *code sandbox*
+# can talk to the local Docker engine. For a VPS deploy with coding enabled,
+# see DEPLOYMENT.md.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: etoz
+      POSTGRES_PASSWORD: etoz
+      POSTGRES_DB: etoz_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - etoz_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etoz -d etoz_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  etoz_pg_data:

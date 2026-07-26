@@ -17,15 +17,79 @@ How to run:
     API docs:  http://localhost:8000/docs
 """
 
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+import logging
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.config import settings
+from backend.database import check_database_connection
+from backend.middleware import RateLimitMiddleware, SecurityHeadersMiddleware
+from backend.routes.admin import router as admin_router
+from backend.routes.auth import router as auth_router
+from backend.routes.code import router as code_router
+from backend.routes.path import router as path_router
+from backend.routes.progress import router as progress_router
+from backend.routes.questions import router as questions_router
+from backend.routes.quizzes import router as quizzes_router
+from backend.routes.submissions import router as submissions_router
+from backend.routes.topics import router as topics_router
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_SECRET = "change-this-to-a-long-random-string"
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Run startup checks before serving requests."""
+
+    if not settings.debug and settings.secret_key == DEFAULT_SECRET:
+        raise RuntimeError(
+            "SECRET_KEY is still the default value. Set a strong secret "
+            "before running with DEBUG=False."
+        )
+
+    try:
+        check_database_connection()
+        logger.info("Database connection successful.")
+    except Exception as error:
+        logger.error("Database connection failed: %s", error)
+
+    yield
+
 
 # Create the FastAPI application instance.
 # Think of `app` as the central hub that all routes connect to.
 app = FastAPI(
-    title="ETOZ Learning Platform API",
+    title=f"{settings.app_name} API",
     description="Backend API for the ETOZ Python learning platform",
     version="0.1.0",
+    debug=settings.debug,
+    lifespan=lifespan,
 )
+
+# Middleware is applied in reverse order of addition.
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(topics_router, prefix="/api/v1")
+app.include_router(quizzes_router, prefix="/api/v1")
+app.include_router(questions_router, prefix="/api/v1")
+app.include_router(path_router, prefix="/api/v1")
+app.include_router(code_router, prefix="/api/v1")
+app.include_router(submissions_router, prefix="/api/v1")
+app.include_router(progress_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 
 
 @app.get("/")
@@ -54,3 +118,18 @@ def health_check() -> dict[str, str]:
         Status indicator for monitoring tools.
     """
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+def database_health_check() -> dict[str, str]:
+    """Verify that the API can reach PostgreSQL."""
+
+    try:
+        check_database_connection()
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database unavailable: {error}",
+        ) from error
+
+    return {"status": "ok", "database": "connected"}
