@@ -1,15 +1,24 @@
-"""Seed topics, question bank, mixed quizzes, and coding path modules."""
+"""Seed topics, question bank, mixed quizzes, coding path, and demo classes."""
+
+import os
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
-from backend.models.coding_module import CodingModule, ModuleLevel
+from backend.models.classroom import ClassModule, ClassQuiz, Classroom
+from backend.models.coding_module import CodingModule, ModuleBlock
 from backend.models.question import Question
 from backend.models.quiz import Quiz
 from backend.models.quiz_question import QuizQuestion
+from backend.models.subject import Subject
 from backend.models.topic import Topic
+from backend.models.user import User
+from backend.security import hash_password
 
+SUBJECT_NAMES = ["python", "math", "java"]
+
+# Areas seeded under the python subject
 TOPIC_NAMES = [
     "basics",
     "operators",
@@ -167,10 +176,29 @@ PATH_MODULES = [
 ]
 
 
-def _get_or_create_topic(database: Session, name: str) -> Topic:
-    topic = database.scalars(select(Topic).where(Topic.name == name)).first()
+def _get_or_create_subject(database: Session, name: str) -> Subject:
+    subject = database.scalars(select(Subject).where(Subject.name == name)).first()
+    if subject is None:
+        subject = Subject(name=name)
+        database.add(subject)
+        database.flush()
+    return subject
+
+
+def _get_or_create_topic(
+    database: Session,
+    name: str,
+    *,
+    subject: Subject,
+) -> Topic:
+    topic = database.scalars(
+        select(Topic).where(
+            Topic.name == name,
+            Topic.subject_id == subject.id,
+        )
+    ).first()
     if topic is None:
-        topic = Topic(name=name)
+        topic = Topic(name=name, subject_id=subject.id)
         database.add(topic)
         database.flush()
     return topic
@@ -184,22 +212,38 @@ def seed_all() -> dict[str, int]:
     """Insert missing seed data and return creation counts."""
 
     counts = {
+        "subjects": 0,
         "topics": 0,
         "questions": 0,
         "quizzes": 0,
         "quiz_links": 0,
         "modules": 0,
         "levels": 0,
+        "classes": 0,
+        "teachers": 0,
     }
 
     with SessionLocal() as database:
+        for name in SUBJECT_NAMES:
+            existing = database.scalars(
+                select(Subject).where(Subject.name == name)
+            ).first()
+            if existing is None:
+                database.add(Subject(name=name))
+                database.flush()
+                counts["subjects"] += 1
+
+        python = _get_or_create_subject(database, "python")
         topic_map: dict[str, Topic] = {}
         for name in TOPIC_NAMES:
             existing = database.scalars(
-                select(Topic).where(Topic.name == name)
+                select(Topic).where(
+                    Topic.name == name,
+                    Topic.subject_id == python.id,
+                )
             ).first()
             if existing is None:
-                topic = Topic(name=name)
+                topic = Topic(name=name, subject_id=python.id)
                 database.add(topic)
                 database.flush()
                 counts["topics"] += 1
@@ -226,7 +270,9 @@ def seed_all() -> dict[str, int]:
                 for topic_name in raw["topics"]:
                     question.topic_tags.append(
                         topic_map.get(topic_name)
-                        or _get_or_create_topic(database, topic_name)
+                        or _get_or_create_topic(
+                            database, topic_name, subject=python
+                        )
                     )
                 database.add(question)
                 database.flush()
@@ -237,13 +283,41 @@ def seed_all() -> dict[str, int]:
                     for topic_name in raw["topics"]:
                         existing.topic_tags.append(
                             topic_map.get(topic_name)
-                            or _get_or_create_topic(database, topic_name)
+                            or _get_or_create_topic(
+                                database, topic_name, subject=python
+                            )
                         )
                 question_map[raw["title"]] = existing
 
+        teacher = database.scalars(
+            select(User).where(User.username == "demo_teacher")
+        ).first()
+        if teacher is None:
+            teacher = User(
+                username="demo_teacher",
+                email="demo_teacher@example.com",
+                hashed_password=hash_password("password123"),
+                role="admin",
+                email_verified=True,
+            )
+            database.add(teacher)
+            database.flush()
+            counts["teachers"] += 1
+        else:
+            if teacher.role != "admin":
+                teacher.role = "admin"
+            if not teacher.email_verified:
+                teacher.email_verified = True
+            # EmailStr rejects reserved TLDs like .local
+            if teacher.email.endswith(".local"):
+                teacher.email = "demo_teacher@example.com"
+
         for quiz_data in QUIZZES:
             quiz = database.scalars(
-                select(Quiz).where(Quiz.title == quiz_data["title"])
+                select(Quiz).where(
+                    Quiz.title == quiz_data["title"],
+                    Quiz.owner_id == teacher.id,
+                )
             ).first()
             if quiz is None:
                 quiz = Quiz(
@@ -252,10 +326,15 @@ def seed_all() -> dict[str, int]:
                     topic=None,
                     is_timed=quiz_data["is_timed"],
                     duration_seconds=quiz_data["duration_seconds"],
+                    owner_id=teacher.id,
+                    visibility="public",
                 )
                 database.add(quiz)
                 database.flush()
                 counts["quizzes"] += 1
+            else:
+                quiz.owner_id = teacher.id
+                quiz.visibility = quiz.visibility or "public"
 
             existing_links = {
                 link.question_id: link for link in quiz.quiz_questions
@@ -274,39 +353,180 @@ def seed_all() -> dict[str, int]:
                     )
                     counts["quiz_links"] += 1
 
-        for module_data in PATH_MODULES:
-            module = database.scalars(
-                select(CodingModule).where(
-                    CodingModule.title == module_data["title"]
-                )
-            ).first()
-            if module is None:
-                module = CodingModule(
-                    title=module_data["title"],
-                    description=module_data["description"],
-                    position=module_data["position"],
-                    difficulty_label=module_data["difficulty_label"],
-                )
-                database.add(module)
-                database.flush()
-                counts["modules"] += 1
+        quiz_ids = [
+            quiz.id
+            for quiz in database.scalars(select(Quiz).order_by(Quiz.id)).all()
+        ]
 
-            existing_levels = {
-                level.question_id: level for level in module.levels
+        demo_classes = [
+            {
+                "title": "Intro Python (Public)",
+                "description": (
+                    "Open demo class for schools. Students can browse and enroll "
+                    "without a code."
+                ),
+                "visibility": "public",
+                "enrollment_code": "PUBLIC01",
+                "quiz_ids": quiz_ids[:2] if quiz_ids else [],
+                "module_slice": slice(0, 1),
+            },
+            {
+                "title": "Cohort A (Private)",
+                "description": (
+                    "Private demo class. Students join only with the enrollment code."
+                ),
+                "visibility": "private",
+                "enrollment_code": "PRIVATE1",
+                "quiz_ids": quiz_ids[:1] if quiz_ids else [],
+                "module_slice": slice(0, 2),
+            },
+        ]
+
+        class_rows: list[Classroom] = []
+        for class_data in demo_classes:
+            classroom = database.scalars(
+                select(Classroom).where(Classroom.title == class_data["title"])
+            ).first()
+            if classroom is None:
+                classroom = Classroom(
+                    title=class_data["title"],
+                    description=class_data["description"],
+                    owner_id=teacher.id,
+                    visibility=class_data["visibility"],
+                    enrollment_code=class_data["enrollment_code"],
+                    is_active=True,
+                )
+                database.add(classroom)
+                database.flush()
+                counts["classes"] += 1
+            class_rows.append(classroom)
+
+            existing_quiz_links = {
+                link.quiz_id: link for link in classroom.class_quizzes
             }
-            for position, title in enumerate(module_data["levels"]):
-                question = question_map[title]
-                if question.id in existing_levels:
-                    existing_levels[question.id].position = position
+            for position, quiz_id in enumerate(class_data["quiz_ids"]):
+                if quiz_id in existing_quiz_links:
+                    existing_quiz_links[quiz_id].position = position
+                    existing_quiz_links[quiz_id].is_published = True
                 else:
                     database.add(
-                        ModuleLevel(
-                            module_id=module.id,
-                            question_id=question.id,
+                        ClassQuiz(
+                            class_id=classroom.id,
+                            quiz_id=quiz_id,
                             position=position,
+                            is_published=True,
                         )
                     )
-                    counts["levels"] += 1
+
+        # Modules belong to a class — seed into the public demo class primarily.
+        primary_class = class_rows[0] if class_rows else None
+        if primary_class is not None:
+            for module_data in PATH_MODULES:
+                module = database.scalars(
+                    select(CodingModule).where(
+                        CodingModule.class_id == primary_class.id,
+                        CodingModule.title == module_data["title"],
+                    )
+                ).first()
+                if module is None:
+                    module = CodingModule(
+                        class_id=primary_class.id,
+                        title=module_data["title"],
+                        description=module_data["description"],
+                        position=module_data["position"],
+                        difficulty_label=module_data["difficulty_label"],
+                    )
+                    database.add(module)
+                    database.flush()
+                    counts["modules"] += 1
+                    database.add(
+                        ClassModule(
+                            class_id=primary_class.id,
+                            module_id=module.id,
+                            position=module_data["position"],
+                            is_published=True,
+                        )
+                    )
+
+                if not module.blocks and module.description:
+                    database.add(
+                        ModuleBlock(
+                            module_id=module.id,
+                            position=0,
+                            type="lecture",
+                            payload={"markdown": module.description},
+                        )
+                    )
+                existing_coding = {
+                    block.question_id: block
+                    for block in module.blocks
+                    if block.type == "coding"
+                }
+                offset = 1 if module.description else 0
+                for position, title in enumerate(module_data["levels"]):
+                    question = question_map[title]
+                    if question.id in existing_coding:
+                        existing_coding[question.id].position = position + offset
+                    else:
+                        database.add(
+                            ModuleBlock(
+                                module_id=module.id,
+                                position=position + offset,
+                                type="coding",
+                                payload={},
+                                question_id=question.id,
+                            )
+                        )
+                        counts["levels"] += 1
+
+            # Copy first module into private class if missing.
+            if len(class_rows) > 1 and PATH_MODULES:
+                private = class_rows[1]
+                first = PATH_MODULES[0]
+                existing = database.scalars(
+                    select(CodingModule).where(
+                        CodingModule.class_id == private.id,
+                        CodingModule.title == first["title"],
+                    )
+                ).first()
+                if existing is None:
+                    clone = CodingModule(
+                        class_id=private.id,
+                        title=first["title"],
+                        description=first["description"],
+                        position=0,
+                        difficulty_label=first["difficulty_label"],
+                    )
+                    database.add(clone)
+                    database.flush()
+                    counts["modules"] += 1
+                    database.add(
+                        ClassModule(
+                            class_id=private.id,
+                            module_id=clone.id,
+                            position=0,
+                            is_published=True,
+                        )
+                    )
+                    database.add(
+                        ModuleBlock(
+                            module_id=clone.id,
+                            position=0,
+                            type="lecture",
+                            payload={"markdown": first["description"]},
+                        )
+                    )
+                    for position, title in enumerate(first["levels"]):
+                        database.add(
+                            ModuleBlock(
+                                module_id=clone.id,
+                                position=position + 1,
+                                type="coding",
+                                payload={},
+                                question_id=question_map[title].id,
+                            )
+                        )
+                        counts["levels"] += 1
 
         database.commit()
 
@@ -320,11 +540,30 @@ def seed_questions() -> tuple[int, int, int]:
     return counts["quizzes"], counts["questions"], counts["questions"]
 
 
+def _refuse_demo_seed_in_production() -> None:
+    env = (os.getenv("ETOZ_ENV") or os.getenv("ENVIRONMENT") or "").lower()
+    allow = (os.getenv("ETOZ_SEED_DEMO") or "").lower() in {"1", "true", "yes"}
+    if env in {"production", "prod"} and not allow:
+        raise SystemExit(
+            "Refusing to seed demo credentials in production. "
+            "Use a non-production ETOZ_ENV, or set ETOZ_SEED_DEMO=1 only on "
+            "dedicated demo hosts."
+        )
+
+
 if __name__ == "__main__":
+    _refuse_demo_seed_in_production()
     result = seed_all()
     print(
         "Seed complete: "
-        f"{result['topics']} topics, {result['questions']} questions, "
+        f"{result['subjects']} subjects, {result['topics']} areas, "
+        f"{result['questions']} questions, "
         f"{result['quizzes']} quizzes, {result['quiz_links']} quiz links, "
-        f"{result['modules']} modules, {result['levels']} levels."
+        f"{result['modules']} modules, {result['levels']} levels, "
+        f"{result['teachers']} teachers, {result['classes']} classes."
+    )
+    print(
+        "Demo teacher login: demo_teacher / password123\n"
+        "Public class code: PUBLIC01 · Private class code: PRIVATE1\n"
+        "WARNING: never run this seed against a production database."
     )

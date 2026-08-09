@@ -7,23 +7,18 @@ from backend.schemas.question import QuestionCreate
 from backend.schemas.submission import SubmissionCreate
 
 
-def _auth_headers(client) -> dict[str, str]:
+from tests.helpers import register_and_login_headers
+
+
+def _auth_headers(client, database_session) -> dict[str, str]:
     """Create a test user and return a Bearer authorization header."""
 
-    client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "route_tester",
-            "email": "routes@example.com",
-            "password": "password123",
-        },
+    return register_and_login_headers(
+        client,
+        database_session,
+        "route_tester",
+        email="routes@example.com",
     )
-    response = client.post(
-        "/api/v1/auth/login",
-        json={"username": "route_tester", "password": "password123"},
-    )
-    token = response.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 def test_openapi_contains_all_versioned_route_groups(client) -> None:
@@ -35,6 +30,10 @@ def test_openapi_contains_all_versioned_route_groups(client) -> None:
         "/api/v1/auth/register",
         "/api/v1/auth/login",
         "/api/v1/auth/me",
+        "/api/v1/auth/verify-email",
+        "/api/v1/auth/resend-verification",
+        "/api/v1/auth/forgot-password",
+        "/api/v1/auth/reset-password",
         "/api/v1/quizzes",
         "/api/v1/quizzes/{quiz_id}/questions",
         "/api/v1/quizzes/{quiz_id}/complete",
@@ -68,10 +67,12 @@ def test_feature_routes_require_authentication(client, path: str) -> None:
     assert response.status_code == 401
 
 
-def test_authenticated_placeholder_routes_return_typed_responses(client) -> None:
+def test_authenticated_placeholder_routes_return_typed_responses(
+    client, database_session
+) -> None:
     """Authenticated routes should return their documented Step 4 shapes."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
 
     assert client.get("/api/v1/questions", headers=headers).json() == []
     assert client.get("/api/v1/submissions", headers=headers).json() == []
@@ -84,10 +85,10 @@ def test_authenticated_placeholder_routes_return_typed_responses(client) -> None
     }
 
 
-def test_invalid_submission_body_returns_422(client) -> None:
+def test_invalid_submission_body_returns_422(client, database_session) -> None:
     """FastAPI should reject malformed submissions before business logic."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     response = client.post(
         "/api/v1/submissions",
         headers=headers,

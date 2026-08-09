@@ -3,28 +3,17 @@
 from decimal import Decimal
 
 from backend.models.progress import Progress
+from tests.helpers import register_and_login_headers
 
 
-def _auth_headers(client, username: str = "progress_user") -> dict[str, str]:
-    client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": username,
-            "email": f"{username}@example.com",
-            "password": "password123",
-        },
-    )
-    response = client.post(
-        "/api/v1/auth/login",
-        json={"username": username, "password": "password123"},
-    )
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+def _auth_headers(client, database_session, username: str = "progress_user") -> dict[str, str]:
+    return register_and_login_headers(client, database_session, username)
 
 
 def test_progress_summary_aggregates_topic_rows(client, database_session) -> None:
     """Summary totals and weak topics come from Progress rows."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     # Resolve user id from /me
     user_id = client.get("/api/v1/auth/me", headers=headers).json()["id"]
 
@@ -61,8 +50,8 @@ def test_progress_summary_aggregates_topic_rows(client, database_session) -> Non
 def test_progress_is_user_scoped(client, database_session) -> None:
     """Students only see their own progress rows."""
 
-    headers_a = _auth_headers(client, "alice_progress")
-    headers_b = _auth_headers(client, "bob_progress")
+    headers_a = _auth_headers(client, database_session, "alice_progress")
+    headers_b = _auth_headers(client, database_session, "bob_progress")
     alice_id = client.get("/api/v1/auth/me", headers=headers_a).json()["id"]
 
     database_session.add(

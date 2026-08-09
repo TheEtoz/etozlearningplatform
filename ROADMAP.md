@@ -237,9 +237,13 @@ Step-by-step plan from MVP to production. Complete and verify each step before m
 
 - Java, C++, JavaScript support
 - AI Tutor integration
-- Courses and assignments
-- Teacher dashboard (class management)
+- Due dates / assignment windows on class quizzes
+- Multi-teacher co-teaching and school org accounts
 - Email verification, password reset
+
+**Done for school sales MVP:** Classes with public/private enrollment, teacher
+publish of quizzes/modules, roster + performance, student class-scoped Practice
+and Coding Path.
 
 ---
 
@@ -265,4 +269,4 @@ pytest -v
 
 ---
 
-*Last updated: UX redesign — question bank, mixed quizzes, coding path, role hubs. See DEPLOYMENT.md for hosting.*
+*Last updated: Class enrollment system for schools/universities. See DEPLOYMENT.md for hosting.*

@@ -1,6 +1,5 @@
-"""Student hub — practice entry points plus learning stats."""
+"""Student hub — enrolled classes plus learning stats."""
 
-import importlib
 import runpy
 from pathlib import Path
 
@@ -16,47 +15,71 @@ runpy.run_path(
 
 import streamlit as st
 
-import frontend.utils.api as _api
-
-importlib.reload(_api)
+import importlib
+import frontend.utils.reload as _etoz_reload
+importlib.reload(_etoz_reload)
+_etoz_reload.reload_frontend_utils()
 
 from frontend.utils.api import (
     APIError,
     get_progress,
     get_progress_summary,
+    list_enrolled_classes,
     list_submissions,
 )
 from frontend.utils.guards import require_student
-from frontend.utils.session import init_session_state
+from frontend.utils.public_mode import is_public_mode
+from frontend.utils.session import get_access_token, init_session_state, is_logged_in
+from frontend.utils.ui import render_preserved_text
 
 st.set_page_config(page_title="Dashboard | ETOZ", page_icon="📊", layout="wide")
 init_session_state()
 user = require_student()
 
-st.title(f"Welcome, {user.get('username', 'student')}")
-st.caption("Your student home — practice, progress, and recent activity.")
+# Guests have no dashboard — send them to public class content.
+if is_public_mode() and not is_logged_in():
+    st.switch_page("pages/ClassHome.py")
 
-c1, c2 = st.columns(2, gap="large")
-with c1:
-    with st.container(border=True):
-        st.subheader("Practice Quizzes")
-        st.write(
-            "Timed and untimed quizzes from the bank. MCQ and coding can be mixed."
-        )
-        st.page_link("pages/Practice.py", label="Open quizzes", icon="🧠")
-with c2:
-    with st.container(border=True):
-        st.subheader("Coding Path")
-        st.write(
-            "Module-by-module trail of coding levels. Jump freely to any node."
-        )
-        st.page_link("pages/CodingPath.py", label="Open coding path", icon="💻")
+token = get_access_token()
+
+st.title(f"Welcome, {user.get('username', 'student')}")
+st.caption("Your student home — classes, progress, and recent activity.")
+
+st.subheader("Your classes")
+try:
+    enrolled = list_enrolled_classes(token)
+except APIError as error:
+    st.error(str(error))
+    enrolled = []
+
+if not enrolled:
+    st.info("Enroll in a class to access quizzes and lectures.")
+    st.page_link("pages/Classes.py", label="Find a class", icon="🏫")
+else:
+    cols = st.columns(min(3, len(enrolled)))
+    for index, classroom in enumerate(enrolled):
+        with cols[index % len(cols)]:
+            with st.container(border=True):
+                st.markdown(f"**{classroom['title']}**")
+                render_preserved_text(classroom.get("description") or "")
+                st.caption(
+                    f"{classroom.get('quiz_count', 0)} quizzes · "
+                    f"{classroom.get('module_count', 0)} modules"
+                )
+                if st.button(
+                    "Open",
+                    key=f"dash_open_{classroom['id']}",
+                    width="stretch",
+                ):
+                    st.session_state.active_class_id = classroom["id"]
+                    st.session_state.active_class_title = classroom["title"]
+                    st.switch_page("pages/ClassHome.py")
+    st.page_link("pages/Classes.py", label="Browse or join more classes", icon="🏫")
 
 st.divider()
 st.subheader("Your progress")
 
 try:
-    token = st.session_state.access_token
     summary = get_progress_summary(token)
     topics = get_progress(token)
     submissions = list_submissions(token)
@@ -85,10 +108,10 @@ if topics:
         }
         for row in topics
     ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
     st.bar_chart({row["topic"]: row["accuracy"] for row in rows})
 else:
-    st.info("Complete a quiz or coding level to see topic stats here.")
+    st.info("Complete a class quiz or coding level to see topic stats here.")
 
 st.subheader("Recent activity")
 if not submissions:

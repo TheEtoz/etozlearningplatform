@@ -1,4 +1,4 @@
-"""ETOZ marketing home — no role UI until the visitor logs in."""
+"""ETOZ landing — guests see a simple home; logged-in users go to their hub."""
 
 import runpy
 from pathlib import Path
@@ -16,7 +16,7 @@ runpy.run_path(
 import streamlit as st
 
 from frontend.utils.guards import hub_for_role
-from frontend.utils.nav import render_public_sidebar, render_nav_for_current_user
+from frontend.utils.nav import render_nav_for_current_user, render_public_sidebar
 from frontend.utils.session import init_session_state, is_logged_in
 
 st.set_page_config(
@@ -38,14 +38,14 @@ st.markdown(
     """
     <style>
     .etoz-hero {
-        min-height: 70vh;
+        min-height: 72vh;
         display: flex;
         flex-direction: column;
         justify-content: center;
-        padding: 2.5rem 1rem 3rem;
+        padding: 2.75rem 1.25rem 3rem;
         background:
-            radial-gradient(circle at 15% 20%, rgba(14, 116, 144, 0.18), transparent 40%),
-            radial-gradient(circle at 85% 10%, rgba(34, 197, 94, 0.12), transparent 35%),
+            radial-gradient(circle at 12% 18%, rgba(14, 116, 144, 0.16), transparent 42%),
+            radial-gradient(circle at 88% 12%, rgba(34, 197, 94, 0.10), transparent 38%),
             linear-gradient(180deg, #f7fafc 0%, #eef5f3 55%, #f8fafc 100%);
         border-radius: 1rem;
     }
@@ -63,6 +63,7 @@ st.markdown(
         max-width: 34rem;
         font-size: 1.15rem;
         color: #334155;
+        line-height: 1.5;
     }
     </style>
     """,
@@ -74,16 +75,18 @@ st.markdown(
     <div class="etoz-hero">
       <p class="etoz-brand">ETOZ</p>
       <p class="etoz-tag">
-        Learn Python through quizzes and a guided coding path.
-        Sign in to continue as a student or teacher.
+        Learn through guided modules and class quizzes.
+        Browse as a guest, or create an account to save progress and teach.
       </p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-left, right, _ = st.columns([1, 1, 2])
-with left:
+c1, c2, c3, _ = st.columns([1.1, 1, 1, 2.2])
+with c1:
+    st.page_link("pages/Classes.py", label="Browse classes", icon="📚")
+with c2:
     st.page_link("pages/Login.py", label="Log in", icon="🔐")
-with right:
+with c3:
     st.page_link("pages/Register.py", label="Create account", icon="📝")

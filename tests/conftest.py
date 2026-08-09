@@ -9,10 +9,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import backend.models  # noqa: F401 -- register all models with Base.metadata
+from backend.config import settings
 from backend.database import Base, get_db
 from backend.main import app
 
 TEST_DATABASE_URL = "sqlite://"
+
+
+@pytest.fixture(autouse=True)
+def _email_log_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let auth emails succeed via DEBUG log without Resend/SMTP in tests."""
+
+    monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr("backend.services.email_service.settings.debug", True)
+    monkeypatch.setattr("backend.services.auth_email_service.settings.debug", True)
+    monkeypatch.setattr("backend.routes.auth.settings.debug", True)
 
 
 @pytest.fixture

@@ -2,17 +2,63 @@
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import streamlit as st
 
 
-def render_preserved_text(text: str) -> None:
-    """Show teacher-authored text with newlines preserved."""
+def _content_render():
+    """Import content_render lazily (avoids Streamlit stale-module ImportErrors)."""
 
-    safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    from frontend.utils import content_render as content_render
+
+    return content_render
+
+
+def classify_media_url(url: str) -> str:
+    return _content_render().classify_media_url(url)
+
+
+def media_from_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    return _content_render().media_from_payload(payload)
+
+
+def media_items_from_payload(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return _content_render().media_items_from_payload(payload)
+
+
+def render_download_link(url: str, label: str | None = None) -> None:
+    _content_render().render_download_link(url, label)
+
+
+def render_markdown_content(text: str, *, empty_caption: str | None = None) -> None:
+    _content_render().render_markdown_content(text, empty_caption=empty_caption)
+
+
+def render_media_item(item: dict[str, Any]) -> None:
+    _content_render().render_media_item(item)
+
+
+def render_media_items(items: list[dict[str, Any]]) -> None:
+    _content_render().render_media_items(items)
+
+
+def youtube_embed_url(url: str) -> str | None:
+    return _content_render().youtube_embed_url(url)
+
+
+def render_preserved_text(text: str) -> None:
+    """Show teacher-authored text; compile LaTeX when present (never show raw)."""
+
+    body = text or ""
+    if "\\" in body or "$" in body:
+        render_markdown_content(body)
+        return
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     st.markdown(
-        f'<div style="white-space: pre-wrap; line-height: 1.5;">{safe}</div>',
+        f"<p style='white-space:pre-wrap;line-height:1.55;margin:0.25rem 0 0.75rem 0;"
+        f"color:inherit;'>{safe}</p>",
         unsafe_allow_html=True,
     )
 
@@ -20,22 +66,59 @@ def render_preserved_text(text: str) -> None:
 def question_summary_label(question: dict) -> str:
     """Short label for lists and pickers."""
 
-    topics = ", ".join(question.get("topics") or []) or "—"
+    subject = question.get("subject") or "—"
+    areas = ", ".join(question.get("topics") or []) or "—"
+    visibility = question.get("visibility") or "public"
     return (
-        f"#{question['id']} · {question['title']} · "
-        f"{question.get('type')} · {question.get('difficulty')} · {topics}"
+        f"{question['title']} · {question.get('type')} · "
+        f"{question.get('difficulty')} · {subject}/{areas} · {visibility}"
+    )
+
+
+def render_student_question_view(question: dict) -> None:
+    """Exact student-facing look: prompt + choices or starter code (no answers)."""
+
+    st.markdown(f"### {question.get('title') or 'Question'}")
+    render_markdown_content(question.get("description") or "")
+    subject = question.get("subject") or "—"
+    areas = ", ".join(question.get("topics") or []) or "—"
+    st.caption(f"{question.get('difficulty', '')} · {subject} · {areas}")
+
+    if question.get("type") == "mcq":
+        choices = question.get("choices") or []
+        if not choices:
+            st.info("No choices yet.")
+            return
+        st.radio(
+            "Choose one",
+            choices,
+            index=None,
+            key=f"student_preview_radio_{question.get('id', 'new')}_{len(choices)}",
+            disabled=True,
+        )
+        return
+
+    starter = question.get("starter_code") or ""
+    st.text_area(
+        "Your Python code",
+        value=starter,
+        height=180,
+        disabled=True,
+        key=f"student_preview_code_{question.get('id', 'new')}",
     )
 
 
 def render_question_preview(question: dict, *, show_answers: bool = True) -> None:
     """Show prompt, MCQ options, or coding tests so teachers need not memorize IDs."""
 
+    subject = question.get("subject") or "—"
+    areas = ", ".join(question.get("topics") or []) or "—"
     st.caption(
         f"{question.get('type', '?').upper()} · "
         f"{question.get('difficulty', '?')} · "
-        f"topics: {', '.join(question.get('topics') or []) or '—'}"
+        f"{subject} · areas: {areas}"
     )
-    render_preserved_text(question.get("description") or "")
+    render_markdown_content(question.get("description") or "")
 
     if question.get("type") == "mcq":
         choices = question.get("choices") or []
@@ -97,6 +180,7 @@ def filter_question_bank(
                     str(question.get("id", "")),
                     question.get("title") or "",
                     question.get("description") or "",
+                    question.get("subject") or "",
                     " ".join(topics),
                     " ".join(question.get("choices") or []),
                 ]
@@ -113,16 +197,16 @@ def bank_picker_filters(
     key_prefix: str,
     allow_type_filter: bool = True,
 ) -> list[dict]:
-    """Render search / type / topic controls and return the filtered bank."""
+    """Render search / type / area controls and return the filtered bank."""
 
-    topics = sorted(
+    areas = sorted(
         {name for q in questions for name in (q.get("topics") or []) if name}
     )
     cols = st.columns([3, 1, 1] if allow_type_filter else [3, 1])
     search = cols[0].text_input(
-        "Search questions",
+        "Search",
         key=f"{key_prefix}_search",
-        placeholder="Title, prompt text, option text, topic, or #id",
+        placeholder="Title, prompt, option text, subject, area, or id",
     )
     qtype = "all"
     if allow_type_filter:
@@ -131,19 +215,19 @@ def bank_picker_filters(
             ["all", "mcq", "coding"],
             key=f"{key_prefix}_type",
         )
-        topic_col = cols[2]
+        area_col = cols[2]
     else:
-        topic_col = cols[1]
-    topic = topic_col.selectbox(
-        "Topic",
-        ["all", *topics],
+        area_col = cols[1]
+    area = area_col.selectbox(
+        "Area",
+        ["all", *areas],
         key=f"{key_prefix}_topic",
     )
     filtered = filter_question_bank(
         questions,
         search=search,
         qtype=qtype,
-        topic=topic,
+        topic=area,
     )
     st.caption(f"Showing {len(filtered)} of {len(questions)} bank questions")
     return filtered
@@ -155,18 +239,18 @@ def topic_picker(
     key_prefix: str,
     default: list[str] | None = None,
 ) -> list[str]:
-    """Searchable multi-select of topics plus optional new topic creation."""
+    """Legacy area multi-select (prefer subject_area_picker)."""
 
     options = sorted({name.strip().lower() for name in available if name.strip()})
     selected = st.multiselect(
-        "Topic areas",
+        "Areas",
         options=options,
         default=[t for t in (default or []) if t in options],
         key=f"{key_prefix}_topics",
-        help="Search and select one or more topics. Add a new topic below if needed.",
+        help="Areas inside the selected subject.",
     )
     new_topic = st.text_input(
-        "Create a new topic area (optional)",
+        "Create a new area (optional)",
         key=f"{key_prefix}_new_topic",
         placeholder="e.g. recursion",
     )
@@ -176,6 +260,112 @@ def topic_picker(
         if name not in topics:
             topics.append(name)
     return topics
+
+
+def subject_area_picker(
+    *,
+    subjects_tree: list[dict],
+    key_prefix: str,
+    default_subject: str | None = None,
+    default_areas: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Pick a subject then areas via searchable filtered lists."""
+
+    subject_names = [item["name"] for item in subjects_tree]
+    if not subject_names:
+        subject_names = ["python"]
+
+    subject_search = st.text_input(
+        "Search subjects",
+        key=f"{key_prefix}_subject_search",
+        placeholder="Filter: python, math, java…",
+    )
+    subject_needle = subject_search.strip().lower()
+    filtered_subjects = [
+        name
+        for name in subject_names
+        if not subject_needle or subject_needle in name.lower()
+    ]
+    if not filtered_subjects:
+        st.caption("No subjects match that search.")
+        filtered_subjects = subject_names
+
+    default_index = 0
+    if default_subject and default_subject in filtered_subjects:
+        default_index = filtered_subjects.index(default_subject)
+    elif default_subject and default_subject in subject_names:
+        # Keep prior selection visible even if filtered out.
+        filtered_subjects = [default_subject, *filtered_subjects]
+        default_index = 0
+
+    subject = st.selectbox(
+        "Subject",
+        filtered_subjects,
+        index=default_index,
+        key=f"{key_prefix}_subject",
+        help="Broad track such as python, math, or java.",
+    )
+
+    area_names: list[str] = []
+    for item in subjects_tree:
+        if item["name"] == subject:
+            area_names = sorted(area["name"] for area in item.get("areas") or [])
+            break
+
+    area_search = st.text_input(
+        "Search areas",
+        key=f"{key_prefix}_area_search",
+        placeholder="Filter areas inside this subject…",
+    )
+    area_needle = area_search.strip().lower()
+    filtered_areas = [
+        name
+        for name in area_names
+        if not area_needle or area_needle in name.lower()
+    ]
+    default_selected = [a for a in (default_areas or []) if a in filtered_areas]
+    selected = st.multiselect(
+        "Areas inside this subject",
+        options=filtered_areas,
+        default=default_selected,
+        key=f"{key_prefix}_areas",
+        help="Search above, then select one or more areas.",
+    )
+
+    new_subject = ""
+    new_area = ""
+    with st.expander("Create new subject or area"):
+        new_subject = st.text_input(
+            "New subject name",
+            key=f"{key_prefix}_create_subject",
+            placeholder="e.g. java",
+        )
+        new_area = st.text_input(
+            "New area under selected subject",
+            key=f"{key_prefix}_new_area",
+            placeholder="e.g. recursion",
+        )
+        st.caption(
+            "Type a new subject to use it for this question, or a new area name "
+            "to add it to the selection."
+        )
+        if new_subject.strip():
+            st.caption(f"Will use subject: **{new_subject.strip().lower()}**")
+            subject = new_subject.strip().lower()
+
+    areas = list(selected)
+    if new_area.strip():
+        name = new_area.strip().lower()
+        if name not in areas:
+            areas.append(name)
+    return subject, areas
+
+
+def unsaved_changes_banner(has_unsaved: bool, *, message: str) -> None:
+    """Show an explicit draft warning when Save has not been pressed."""
+
+    if has_unsaved:
+        st.warning(message)
 
 
 def test_case_editor(key_prefix: str, initial: list[dict] | None = None) -> list[dict]:
@@ -254,6 +444,126 @@ def clear_widget_keys(prefix: str) -> None:
     for key in list(st.session_state.keys()):
         if str(key).startswith(prefix):
             del st.session_state[key]
+
+
+def mcq_choices_editor(
+    key_prefix: str,
+    *,
+    initial_choices: list[str] | None = None,
+    initial_correct: str | None = None,
+) -> tuple[list[str], str | None]:
+    """Edit MCQ options as separate entries and pick which entry is correct.
+
+    Returns ``(choices, correct_answer)``. Empty / incomplete forms return
+    ``([], None)`` so the caller can validate before save.
+    """
+
+    state_key = f"{key_prefix}__opts"
+    if state_key not in st.session_state:
+        seed = [str(item).strip() for item in (initial_choices or []) if str(item).strip()]
+        while len(seed) < 2:
+            seed.append("")
+        st.session_state[state_key] = seed
+        # Seed widget keys so existing bank choices actually appear in the inputs.
+        for index, text in enumerate(st.session_state[state_key]):
+            st.session_state[f"{key_prefix}__opt_{index}"] = text
+
+    options = list(st.session_state[state_key])
+    for index in range(len(options)):
+        widget_key = f"{key_prefix}__opt_{index}"
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = options[index]
+        else:
+            options[index] = st.session_state[widget_key]
+
+    st.caption("Each field is one option. Choose which entry is the correct answer.")
+    remove_index: int | None = None
+    for index in range(len(options)):
+        cols = st.columns([8, 1])
+        cols[0].text_input(
+            f"Option {index + 1}",
+            key=f"{key_prefix}__opt_{index}",
+            placeholder=f"Option {index + 1}",
+        )
+        if len(options) > 2 and cols[1].button(
+            "✕",
+            key=f"{key_prefix}__rm_{index}",
+            help="Remove this option",
+        ):
+            remove_index = index
+
+    if remove_index is not None:
+        refreshed = [
+            st.session_state.get(f"{key_prefix}__opt_{index}", options[index])
+            for index in range(len(options))
+            if index != remove_index
+        ]
+        for index in range(len(options) + 2):
+            st.session_state.pop(f"{key_prefix}__opt_{index}", None)
+            st.session_state.pop(f"{key_prefix}__rm_{index}", None)
+        st.session_state.pop(f"{key_prefix}__correct_idx", None)
+        st.session_state[state_key] = refreshed
+        st.rerun()
+
+    if st.button("Add option", key=f"{key_prefix}__add"):
+        options = [
+            st.session_state.get(f"{key_prefix}__opt_{index}", options[index])
+            for index in range(len(options))
+        ]
+        options.append("")
+        st.session_state[state_key] = options
+        st.rerun()
+
+    options = [
+        st.session_state.get(f"{key_prefix}__opt_{index}", options[index])
+        for index in range(len(options))
+    ]
+    st.session_state[state_key] = options
+
+    filled = [str(item).strip() for item in options if str(item).strip()]
+    if len(filled) < 2:
+        st.caption("Add at least two non-empty options.")
+        return [], None
+
+    default_index = 0
+    if initial_correct:
+        for index, text in enumerate(filled):
+            if text == initial_correct:
+                default_index = index
+                break
+    correct_key = f"{key_prefix}__correct_idx"
+    if correct_key not in st.session_state:
+        st.session_state[correct_key] = default_index
+
+    # If options changed and stored index is out of range, clamp.
+    if int(st.session_state[correct_key]) >= len(filled):
+        st.session_state[correct_key] = 0
+
+    selected = st.radio(
+        "Correct option",
+        options=list(range(len(filled))),
+        format_func=lambda index: filled[index],
+        key=correct_key,
+    )
+    return filled, filled[int(selected)]
+
+
+def shuffled_mcq_choices(
+    choices: list[str],
+    *,
+    cache_key: str,
+    seed: int,
+) -> list[str]:
+    """Return a stable shuffled copy of choices for one student attempt."""
+
+    if "shuffled_choices" not in st.session_state:
+        st.session_state.shuffled_choices = {}
+    bucket = st.session_state.shuffled_choices
+    if cache_key not in bucket:
+        shuffled = list(choices)
+        random.Random(seed).shuffle(shuffled)
+        bucket[cache_key] = shuffled
+    return list(bucket[cache_key])
 
 
 def success_banner(message: str) -> None:

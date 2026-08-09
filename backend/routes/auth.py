@@ -1,4 +1,4 @@
-"""Authentication routes: register, login, and current-user profile."""
+"""Authentication routes: register, login, verify email, and password reset."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_
@@ -9,8 +9,24 @@ from backend.config import settings
 from backend.database import get_db
 from backend.dependencies import get_current_user
 from backend.models.user import User
-from backend.schemas.user import Token, UserCreate, UserLogin, UserResponse
+from backend.schemas.user import (
+    EmailRequest,
+    MessageResponse,
+    ResetPasswordRequest,
+    Token,
+    TokenRequest,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+)
 from backend.security import create_access_token, hash_password, verify_password
+from backend.services.auth_email_service import (
+    AuthEmailError,
+    forgot_password,
+    resend_verification,
+    reset_password,
+    verify_email_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -22,6 +38,14 @@ def _is_bootstrap_admin(username: str) -> bool:
     return username.strip().lower() in allowed
 
 
+def _http_auth_email_error(error: AuthEmailError) -> HTTPException:
+    message = str(error)
+    code = status.HTTP_400_BAD_REQUEST
+    if "configured" in message.lower():
+        code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return HTTPException(status_code=code, detail=message)
+
+
 @router.post(
     "/register",
     response_model=UserResponse,
@@ -31,7 +55,7 @@ def register_user(
     payload: UserCreate,
     database: Session = Depends(get_db),
 ) -> User:
-    """Create a new user account with a hashed password."""
+    """Create an account that can log in immediately (no email confirmation)."""
 
     existing_user = database.query(User).filter(
         or_(User.username == payload.username, User.email == payload.email),
@@ -49,9 +73,10 @@ def register_user(
     role = "admin" if _is_bootstrap_admin(payload.username) else "student"
     user = User(
         username=payload.username,
-        email=payload.email,
+        email=str(payload.email).strip().lower(),
         hashed_password=hash_password(payload.password),
         role=role,
+        email_verified=True,
     )
 
     database.add(user)
@@ -91,3 +116,54 @@ def read_current_user(current_user: User = Depends(get_current_user)) -> User:
     """Return the profile of the currently authenticated user."""
 
     return current_user
+
+
+@router.post("/verify-email", response_model=UserResponse)
+def verify_email(
+    payload: TokenRequest,
+    database: Session = Depends(get_db),
+) -> User:
+    try:
+        return verify_email_token(database, raw_token=payload.token)
+    except AuthEmailError as error:
+        raise _http_auth_email_error(error) from error
+
+
+@router.post("/resend-verification", response_model=MessageResponse)
+def resend_verification_email(
+    payload: EmailRequest,
+    database: Session = Depends(get_db),
+) -> MessageResponse:
+    try:
+        message = resend_verification(database, email=str(payload.email))
+    except AuthEmailError as error:
+        raise _http_auth_email_error(error) from error
+    return MessageResponse(message=message)
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+def forgot_password_email(
+    payload: EmailRequest,
+    database: Session = Depends(get_db),
+) -> MessageResponse:
+    try:
+        message = forgot_password(database, email=str(payload.email))
+    except AuthEmailError as error:
+        raise _http_auth_email_error(error) from error
+    return MessageResponse(message=message)
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password_with_token(
+    payload: ResetPasswordRequest,
+    database: Session = Depends(get_db),
+) -> MessageResponse:
+    try:
+        reset_password(
+            database,
+            raw_token=payload.token,
+            new_password=payload.new_password,
+        )
+    except AuthEmailError as error:
+        raise _http_auth_email_error(error) from error
+    return MessageResponse(message="Password updated. You can log in now.")

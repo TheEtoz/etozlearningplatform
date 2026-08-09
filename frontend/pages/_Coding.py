@@ -1,4 +1,4 @@
-"""Legacy coding entry — students only, redirects to coding path."""
+"""Legacy coding entry — redirects to Lectures."""
 
 import runpy
 from pathlib import Path
@@ -18,7 +18,7 @@ import streamlit as st
 from frontend.utils.guards import require_student
 from frontend.utils.session import init_session_state
 
-st.set_page_config(page_title="Coding | ETOZ", page_icon="💻", layout="centered")
+st.set_page_config(page_title="Lecture | ETOZ", page_icon="📖", layout="centered")
 init_session_state()
 require_student()
-st.switch_page("pages/CodingPath.py")
+st.switch_page("pages/Modules.py")

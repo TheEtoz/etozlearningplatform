@@ -1,7 +1,5 @@
 """Student quizzes — equal-size cards and mixed MCQ/coding player."""
 
-import importlib
-import random
 import runpy
 import time
 from pathlib import Path
@@ -18,24 +16,51 @@ runpy.run_path(
 
 import streamlit as st
 
-import frontend.utils.api as _api
-
-importlib.reload(_api)
+import importlib
+import frontend.utils.reload as _etoz_reload
+importlib.reload(_etoz_reload)
+_etoz_reload.reload_frontend_utils()
 
 from frontend.utils.api import (
     APIError,
     complete_quiz,
+    get_demo_class,
     get_quiz_questions,
-    list_quizzes,
+    list_class_quizzes,
     run_code,
 )
 from frontend.utils.guards import require_student
-from frontend.utils.session import get_access_token, init_session_state
-from frontend.utils.ui import render_preserved_text
+from frontend.utils.public_mode import is_public_mode
+from frontend.utils.session import get_access_token, init_session_state, is_logged_in
+from frontend.utils.ui import (
+    render_markdown_content,
+    render_preserved_text,
+    shuffled_mcq_choices,
+)
 
 st.set_page_config(page_title="Practice | ETOZ", page_icon="🧠", layout="wide")
 init_session_state()
 require_student()
+
+if (
+    not st.session_state.get("active_class_id")
+    and is_public_mode()
+    and not is_logged_in()
+):
+    try:
+        demo = get_demo_class()
+        st.session_state.active_class_id = demo["id"]
+        st.session_state.active_class_title = demo["title"]
+    except APIError:
+        pass
+
+if not st.session_state.get("active_class_id"):
+    st.warning("Quizzes are inside a class. Open a class first.")
+    st.page_link("pages/Classes.py", label="Go to Classes", icon="🏫")
+    st.stop()
+
+ACTIVE_CLASS_ID = int(st.session_state.active_class_id)
+ACTIVE_CLASS_TITLE = st.session_state.get("active_class_title") or "Class"
 
 st.markdown(
     """
@@ -133,7 +158,12 @@ def finish_and_reveal() -> None:
             item["answer"] = st.session_state.quiz_answers.get(str(qid))
         answers.append(item)
     try:
-        results = complete_quiz(get_access_token(), quiz["id"], answers)
+        results = complete_quiz(
+            get_access_token(),
+            quiz["id"],
+            answers,
+            ACTIVE_CLASS_ID,
+        )
     except APIError as error:
         st.error(str(error))
         return
@@ -161,15 +191,15 @@ def render_timer() -> None:
 
 
 def render_catalog() -> None:
-    st.title("Practice Quizzes")
-    st.page_link("pages/Dashboard.py", label="Back to Dashboard", icon="📊")
+    st.title(f"Quizzes · {ACTIVE_CLASS_TITLE}")
+    st.page_link("pages/ClassHome.py", label="Back to class", icon="🏫")
     st.session_state.catalog_search = st.text_input(
         "Search",
         value=st.session_state.catalog_search,
         placeholder="Filter by title or topic",
     )
     try:
-        quizzes = list_quizzes(get_access_token())
+        quizzes = list_class_quizzes(get_access_token(), ACTIVE_CLASS_ID)
     except APIError as error:
         st.error(str(error))
         return
@@ -185,7 +215,7 @@ def render_catalog() -> None:
         ]
 
     if not quizzes:
-        st.info("No quizzes match your search.")
+        st.info("No quizzes published in this class yet.")
         return
 
     cols = st.columns(3)
@@ -219,9 +249,13 @@ def render_catalog() -> None:
                 else:
                     st.caption("Not completed yet")
                     label = "Start quiz"
-                if st.button(label, key=f"start_{quiz['id']}", use_container_width=True):
+                if st.button(label, key=f"start_{quiz['id']}", width="stretch"):
                     try:
-                        questions = get_quiz_questions(get_access_token(), quiz["id"])
+                        questions = get_quiz_questions(
+                            get_access_token(),
+                            quiz["id"],
+                            ACTIVE_CLASS_ID,
+                        )
                     except APIError as error:
                         st.error(str(error))
                         return
@@ -286,14 +320,14 @@ def render_player() -> None:
             if st.button(
                 f"{prefix} {i + 1}. {item['type']}",
                 key=f"nav_{i}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state.quiz_index = i
                 st.rerun()
 
     with body:
         st.markdown(f"### {question['title']}")
-        render_preserved_text(question.get("description") or "")
+        render_markdown_content(question.get("description") or "")
         st.caption(
             f"{question.get('difficulty')} · "
             f"{', '.join(question.get('topics') or [])}"
@@ -319,20 +353,18 @@ def render_player() -> None:
         else:
             choices = question.get("choices") or []
             qid = str(question["id"])
-            if qid not in st.session_state.shuffled_choices:
-                shuffled = choices[:]
-                random.Random(quiz["id"] * 1000 + question["id"]).shuffle(shuffled)
-                st.session_state.shuffled_choices[qid] = shuffled
+            display = shuffled_mcq_choices(
+                choices,
+                cache_key=qid,
+                seed=int(quiz["id"]) * 1000 + int(question["id"]),
+            )
             selected = st.radio(
                 "Choose one",
-                st.session_state.shuffled_choices[qid],
+                display,
                 index=(
-                    st.session_state.shuffled_choices[qid].index(
-                        st.session_state.quiz_answers[qid]
-                    )
+                    display.index(st.session_state.quiz_answers[qid])
                     if qid in st.session_state.quiz_answers
-                    and st.session_state.quiz_answers[qid]
-                    in st.session_state.shuffled_choices[qid]
+                    and st.session_state.quiz_answers[qid] in display
                     else None
                 ),
                 key=f"mcq_{question['id']}",

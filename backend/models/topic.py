@@ -1,14 +1,15 @@
-"""Canonical topic tags for the question bank."""
+"""Areas inside a subject (e.g. loops under python)."""
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, String, Table, Column, Integer
+from sqlalchemy import Column, ForeignKey, Integer, String, Table, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 
 if TYPE_CHECKING:
     from backend.models.question import Question
+    from backend.models.subject import Subject
 
 
 question_topics = Table(
@@ -30,13 +31,21 @@ question_topics = Table(
 
 
 class Topic(Base):
-    """A reusable topic area (e.g. loops, lists, basics)."""
+    """A learning area inside a subject (formerly a flat topic)."""
 
     __tablename__ = "topics"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "name", name="uq_topics_subject_id_name"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    subject_id: Mapped[int] = mapped_column(
+        ForeignKey("subjects.id", ondelete="CASCADE"),
+        index=True,
+    )
 
+    subject: Mapped["Subject"] = relationship(back_populates="areas")
     questions: Mapped[list["Question"]] = relationship(
         secondary=question_topics,
         back_populates="topic_tags",

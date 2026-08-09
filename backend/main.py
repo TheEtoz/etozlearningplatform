@@ -19,22 +19,33 @@ How to run:
 
 from contextlib import asynccontextmanager
 import logging
+import mimetypes
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.database import check_database_connection
 from backend.middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from backend.routes.admin import router as admin_router
 from backend.routes.auth import router as auth_router
+from backend.routes.classes import router as classes_router
 from backend.routes.code import router as code_router
 from backend.routes.path import router as path_router
 from backend.routes.progress import router as progress_router
+from backend.routes.public import router as public_router
 from backend.routes.questions import router as questions_router
 from backend.routes.quizzes import router as quizzes_router
 from backend.routes.submissions import router as submissions_router
 from backend.routes.topics import router as topics_router
+from backend.services.media_service import (
+    MediaServiceError,
+    media_root_path,
+    original_filename_from_stored,
+    resolve_stored_media,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +67,9 @@ async def lifespan(_: FastAPI):
         logger.info("Database connection successful.")
     except Exception as error:
         logger.error("Database connection failed: %s", error)
+
+    media_dir = media_root_path()
+    logger.info("Media library directory: %s", media_dir)
 
     yield
 
@@ -82,7 +96,9 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(public_router, prefix="/api/v1")
 app.include_router(topics_router, prefix="/api/v1")
+app.include_router(classes_router, prefix="/api/v1")
 app.include_router(quizzes_router, prefix="/api/v1")
 app.include_router(questions_router, prefix="/api/v1")
 app.include_router(path_router, prefix="/api/v1")
@@ -90,6 +106,34 @@ app.include_router(code_router, prefix="/api/v1")
 app.include_router(submissions_router, prefix="/api/v1")
 app.include_router(progress_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+
+@app.get("/media-download/{stored_name}")
+def download_media_file(stored_name: str) -> FileResponse:
+    """Force a browser download for teacher-uploaded files."""
+
+    try:
+        path = resolve_stored_media(stored_name)
+    except MediaServiceError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    filename = original_filename_from_stored(path.name)
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type="attachment",
+    )
+
+
+# Uploaded lecture/question media (images, videos — inline preview).
+app.mount(
+    "/media",
+    StaticFiles(directory=str(media_root_path())),
+    name="media",
+)
 
 
 @app.get("/")

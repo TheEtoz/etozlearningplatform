@@ -11,6 +11,12 @@ from backend.schemas.submission import (
     SubmissionResponse,
     submission_to_response,
 )
+from backend.services.class_service import (
+    ClassServiceError,
+    get_classroom_for_access,
+    question_published_in_class,
+)
+from backend.services.question_service import get_question
 from backend.services.submission_service import (
     SubmissionError,
     create_submission,
@@ -39,6 +45,42 @@ def create_submission_route(
 ) -> SubmissionResponse:
     """Grade an MCQ or coding attempt, persist it, and update progress."""
 
+    if payload.class_id is not None:
+        try:
+            get_classroom_for_access(
+                database, payload.class_id, user_id=current_user.id
+            )
+        except ClassServiceError as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(error),
+            ) from error
+        if not question_published_in_class(
+            database,
+            class_id=payload.class_id,
+            question_id=payload.question_id,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question is not part of this class",
+            )
+    else:
+        # Global submissions only allowed for public/legacy bank items.
+        question = get_question(database, payload.question_id)
+        if question is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Question not found",
+            )
+        if (
+            question.visibility == "private"
+            and question.owner_id not in (None, current_user.id)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Private question — submit inside an enrolled class",
+            )
+
     try:
         submission, feedback = create_submission(
             database,
@@ -46,6 +88,7 @@ def create_submission_route(
             question_id=payload.question_id,
             answer=payload.answer,
             code=payload.code,
+            class_id=payload.class_id,
         )
     except SubmissionError as error:
         message = str(error)

@@ -1,0 +1,36 @@
+# Free-tier API deploy for ETOZ (Neon Postgres + Render Web Service).
+# Dashboard: https://dashboard.render.com → New → Blueprint → connect this repo.
+#
+# After first deploy, set Streamlit Cloud URL into CORS_ORIGINS / FRONTEND_PUBLIC_URL
+# and PUBLIC_API_URL to this service's https://….onrender.com URL.
+
+services:
+  - type: web
+    name: etoz-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: DEBUG
+        value: "False"
+      - key: PUBLIC_MODE
+        value: "true"
+      - key: ADMIN_USERNAMES
+        value: '["teacher"]'
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: FRONTEND_PUBLIC_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

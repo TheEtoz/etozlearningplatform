@@ -23,9 +23,19 @@ def init_session_state() -> None:
 
     if not st.session_state.auth_restored and not st.session_state.access_token:
         token, user = restore_auth_from_browser()
-        if token and user:
+        if token:
             st.session_state.access_token = token
             st.session_state.current_user = user
+            # Re-hydrate profile when only the token cookie survived.
+            if not user or not user.get("id"):
+                from frontend.utils.api import APIError, get_current_user
+
+                try:
+                    st.session_state.current_user = get_current_user(token)
+                except APIError:
+                    st.session_state.access_token = None
+                    st.session_state.current_user = None
+                    clear_persisted_auth()
         st.session_state.auth_restored = True
 
 
@@ -75,5 +85,8 @@ def refresh_user_profile() -> dict | None:
     except APIError:
         clear_auth_session()
         return None
-    save_auth_session(token, user)
+    # Update session without re-writing cookies on every page load.
+    st.session_state.access_token = token
+    st.session_state.current_user = user
+    st.session_state.auth_restored = True
     return user

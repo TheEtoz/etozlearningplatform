@@ -168,12 +168,21 @@ python -m database.seed
 ```
 
 The command is idempotent: running it again skips quizzes/questions that already
-exist. Open the **Practice** page after logging in to browse quiz cards. Some
-quizzes are **timed by design** (teacher setting); others are untimed. Correct
-answers are revealed only after you finish a quiz. Answer choices are shuffled
-once per quiz and remain stable while navigating.
+exist. It also seeds a demo teacher (`demo_teacher` / `password123`) and two
+demo classes — one public (`PUBLIC01`) and one private (`PRIVATE1`).
 
-Open the **Coding** page for Docker-backed Python exercises (Run + Submit).
+Students enroll via **Classes**, then open a class to take published quizzes and
+the class learning path. Teachers manage classes under **Classes** (publish
+quizzes/modules, roster, performance). Content is **class-scoped** for students:
+they only see what is published to classes they join.
+
+Teachers can keep quizzes/questions **private** or **shared** (Global Question /
+Quiz Bank). Importing a quiz into a class **copies** it by default. Modules are
+ordered **blocks** (lecture, text, MCQ, coding) edited on a dedicated module
+editor page.
+
+Some quizzes are **timed by design** (teacher setting); others are untimed.
+Correct answers are revealed only after you finish a quiz.
 
 ## Docker Code Sandbox (Step 7)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from frontend.utils.nav import render_nav_for_current_user
+from frontend.utils.public_mode import GUEST_USER, is_public_mode
 from frontend.utils.session import init_session_state, is_logged_in, refresh_user_profile
 
 
@@ -29,14 +30,34 @@ def require_login() -> dict:
 
 
 def require_student() -> dict:
-    """Allow only student accounts on student pages."""
+    """Student pages: logged-in students, or guests when public mode is on."""
 
-    user = require_login()
-    if user.get("role") == "admin":
-        st.warning("This page is for students only.")
-        st.page_link("pages/_TeacherHome.py", label="Go to Teacher Home", icon="🛠️")
-        st.stop()
-    return user
+    init_session_state()
+    render_nav_for_current_user()
+
+    if is_logged_in():
+        user = st.session_state.current_user or {}
+        if not user.get("id"):
+            user = refresh_user_profile() or {}
+            if not user:
+                st.warning("Your session expired. Please log in again.")
+                st.page_link("pages/Login.py", label="Go to Login", icon="🔐")
+                st.stop()
+        if user.get("role") == "admin":
+            st.warning("This page is for students only.")
+            st.page_link(
+                "pages/_TeacherHome.py", label="Go to Teacher Home", icon="🛠️"
+            )
+            st.stop()
+        return user
+
+    if is_public_mode():
+        return dict(GUEST_USER)
+
+    st.warning("Please log in to continue.")
+    st.page_link("pages/Login.py", label="Go to Login", icon="🔐")
+    st.stop()
+    return {}
 
 
 def require_teacher() -> dict:

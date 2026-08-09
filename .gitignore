@@ -46,6 +46,10 @@ htmlcov/
 # Streamlit
 .streamlit/secrets.toml
 
+# Uploaded lecture/question media (keep folder, ignore files)
+media/*
+!media/.gitkeep
+
 # Docker
 *.log
 

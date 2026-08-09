@@ -1,22 +1,15 @@
 """Tests for question bank filtering and student-safe responses."""
 
-from tests.helpers import make_question
+from tests.helpers import make_question, register_and_login_headers
 
 
-def _auth_headers(client) -> dict[str, str]:
-    client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "question_tester",
-            "email": "questions@example.com",
-            "password": "password123",
-        },
+def _auth_headers(client, database_session) -> dict[str, str]:
+    return register_and_login_headers(
+        client,
+        database_session,
+        "question_tester",
+        email="questions@example.com",
     )
-    login = client.post(
-        "/api/v1/auth/login",
-        json={"username": "question_tester", "password": "password123"},
-    )
-    return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
 def test_questions_can_be_filtered_without_exposing_answers(
@@ -45,7 +38,7 @@ def test_questions_can_be_filtered_without_exposing_answers(
     response = client.get(
         "/api/v1/questions",
         params={"topic": "lists", "type": "mcq"},
-        headers=_auth_headers(client),
+        headers=_auth_headers(client, database_session),
     )
 
     assert response.status_code == 200
@@ -69,7 +62,7 @@ def test_question_search_and_pagination_are_validated(
         correct_answer="value",
     )
     database_session.commit()
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
 
     search_response = client.get(
         "/api/v1/questions",
@@ -100,7 +93,7 @@ def test_check_answer_reveals_correct_answer_after_attempt(
         correct_answer="5",
     )
     database_session.commit()
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
 
     wrong = client.post(
         f"/api/v1/questions/{question.id}/check",

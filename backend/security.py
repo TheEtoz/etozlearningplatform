@@ -4,6 +4,8 @@ Student passwords must never be stored in plain text. JWT tokens let the
 frontend prove identity on later requests without sending the password again.
 """
 
+import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -12,6 +14,18 @@ from jose import JWTError, jwt
 from backend.config import settings
 
 ALGORITHM = "HS256"
+
+
+def generate_url_token(nbytes: int = 32) -> str:
+    """Return a URL-safe random token for email links."""
+
+    return secrets.token_urlsafe(nbytes)
+
+
+def hash_url_token(raw_token: str) -> str:
+    """Hash an email token for storage (SHA-256 hex)."""
+
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
 def hash_password(plain_password: str) -> str:

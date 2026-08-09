@@ -22,6 +22,7 @@ class SubmissionCreate(BaseModel):
     question_id: int = Field(gt=0)
     answer: str | None = Field(default=None, max_length=10_000)
     code: str | None = Field(default=None, max_length=50_000)
+    class_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def require_exactly_one_response(self) -> Self:

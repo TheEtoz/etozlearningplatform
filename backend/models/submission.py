@@ -17,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.database import Base
 
 if TYPE_CHECKING:
+    from backend.models.classroom import Classroom
     from backend.models.question import Question
     from backend.models.user import User
 
@@ -49,6 +50,11 @@ class Submission(Base):
         ForeignKey("questions.id", ondelete="RESTRICT"),
         index=True,
     )
+    class_id: Mapped[int | None] = mapped_column(
+        ForeignKey("classes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     code: Mapped[str | None] = mapped_column(Text, nullable=True)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     score: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -66,3 +72,6 @@ class Submission(Base):
 
     user: Mapped["User"] = relationship(back_populates="submissions")
     question: Mapped["Question"] = relationship(back_populates="submissions")
+    classroom: Mapped["Classroom | None"] = relationship(
+        back_populates="submissions"
+    )

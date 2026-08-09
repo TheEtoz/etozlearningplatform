@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.models.question import Question
 from backend.models.submission import Submission
 from backend.services.docker_service import (
     DockerExecutionError,
@@ -75,6 +77,7 @@ def create_submission(
     question_id: int,
     answer: str | None,
     code: str | None,
+    class_id: int | None = None,
 ) -> tuple[Submission, dict[str, Any]]:
     """Validate, grade, persist, and update topic progress for one attempt."""
 
@@ -100,6 +103,7 @@ def create_submission(
         submission = Submission(
             user_id=user_id,
             question_id=question.id,
+            class_id=class_id,
             answer=answer.strip(),
             code=None,
             score=score,
@@ -116,6 +120,7 @@ def create_submission(
         submission = Submission(
             user_id=user_id,
             question_id=question.id,
+            class_id=class_id,
             answer=None,
             code=code,
             score=score,
@@ -147,3 +152,65 @@ def create_submission(
     database.commit()
     database.refresh(submission)
     return submission, feedback
+
+
+def grade_without_saving(
+    database: Session,
+    *,
+    question_id: int,
+    answer: str | None,
+    code: str | None,
+) -> dict[str, Any]:
+    """Grade one question for public demo use without persisting a submission."""
+
+    question = get_question(database, question_id)
+    if question is None:
+        raise SubmissionError("Question not found")
+
+    if question.type == "mcq":
+        if not answer or not answer.strip():
+            raise SubmissionError("MCQ questions require an answer")
+        if code and code.strip():
+            raise SubmissionError("MCQ questions do not accept code")
+        score, status = _grade_mcq(question, answer)
+        return {
+            "id": 0,
+            "question_id": question.id,
+            "answer": answer.strip(),
+            "code": None,
+            "score": score,
+            "status": status,
+            "created_at": datetime.now(timezone.utc),
+            "stdout": None,
+            "stderr": None,
+            "timed_out": False,
+            "tests_passed": None,
+            "tests_total": None,
+            "test_results": None,
+        }
+
+    if question.type == "coding":
+        if not code or not code.strip():
+            raise SubmissionError("Coding questions require source code")
+        if answer and answer.strip():
+            raise SubmissionError("Coding questions do not accept MCQ answers")
+        if (question.language or "python").lower() != "python":
+            raise SubmissionError("Only Python coding questions are supported")
+        score, status, result = _grade_coding(question, code)
+        return {
+            "id": 0,
+            "question_id": question.id,
+            "answer": None,
+            "code": code,
+            "score": score,
+            "status": status,
+            "created_at": datetime.now(timezone.utc),
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "timed_out": result.timed_out,
+            "tests_passed": result.tests_passed,
+            "tests_total": result.tests_total,
+            "test_results": result.test_results,
+        }
+
+    raise SubmissionError(f"Unsupported question type: {question.type}")

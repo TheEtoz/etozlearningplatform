@@ -15,7 +15,12 @@ runpy.run_path(
 
 import streamlit as st
 
-from frontend.utils.api import APIError, check_backend_health, get_current_user, login_user
+from frontend.utils.api import (
+    APIError,
+    check_backend_health,
+    get_current_user,
+    login_user,
+)
 from frontend.utils.guards import hub_for_role
 from frontend.utils.nav import render_nav_for_current_user, render_public_sidebar
 from frontend.utils.session import init_session_state, is_logged_in, save_auth_session
@@ -51,10 +56,11 @@ if submitted:
             access_token = token_data["access_token"]
             user = get_current_user(access_token)
             save_auth_session(access_token, user)
-            st.switch_page(hub_for_role(user.get("role")))
+            st.rerun()
         except APIError as error:
             st.error(str(error))
 
 st.divider()
+st.page_link("pages/ForgotPassword.py", label="Forgot password?", icon="🔑")
 st.page_link("pages/Register.py", label="Create an account", icon="📝")
 st.page_link("app.py", label="Back to Home", icon="🏠")

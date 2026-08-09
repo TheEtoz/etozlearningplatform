@@ -1,9 +1,15 @@
 """API schemas for teacher-designed quizzes."""
 
 from decimal import Decimal
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Self
+
+
+class QuizVisibility(str, Enum):
+    PUBLIC = "public"
+    PRIVATE = "private"
 
 
 class QuizCardResponse(BaseModel):
@@ -30,9 +36,10 @@ class QuizCreate(BaseModel):
     """Teacher input for a new quiz shell."""
 
     title: str = Field(min_length=3, max_length=200)
-    description: str = Field(min_length=1, max_length=10_000)
+    description: str = Field(default="", max_length=10_000)
     is_timed: bool = False
     duration_seconds: int | None = Field(default=None, gt=0)
+    visibility: QuizVisibility = QuizVisibility.PRIVATE
 
     @model_validator(mode="after")
     def validate_timer(self) -> Self:
@@ -47,9 +54,10 @@ class QuizUpdate(BaseModel):
     """Partial quiz update."""
 
     title: str | None = Field(default=None, min_length=3, max_length=200)
-    description: str | None = Field(default=None, min_length=1, max_length=10_000)
+    description: str | None = Field(default=None, max_length=10_000)
     is_timed: bool | None = None
     duration_seconds: int | None = Field(default=None, gt=0)
+    visibility: QuizVisibility | None = None
 
 
 class QuizMembershipUpdate(BaseModel):
@@ -68,6 +76,11 @@ class QuizAdminResponse(BaseModel):
     duration_seconds: int | None
     question_ids: list[int] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
+    owner_id: int | None = None
+    visibility: QuizVisibility = QuizVisibility.PUBLIC
+    source_quiz_id: int | None = None
+    can_edit: bool = False
+    can_delete: bool = False
 
 
 class QuizAnswerItem(BaseModel):

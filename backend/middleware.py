@@ -52,7 +52,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _limit_for_path(self, path: str) -> int:
         if path.startswith("/api/v1/auth/"):
             return settings.auth_rate_limit_per_minute
-        if path.startswith("/api/v1/code/") or path == "/api/v1/submissions":
+        if (
+            path.startswith("/api/v1/code/")
+            or path.startswith("/api/v1/public/code/")
+            or path == "/api/v1/submissions"
+            or path == "/api/v1/public/submissions/grade"
+        ):
             # Code execution is expensive — keep this tighter.
             return min(settings.rate_limit_per_minute, 30)
         return settings.rate_limit_per_minute

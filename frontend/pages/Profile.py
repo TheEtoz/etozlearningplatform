@@ -1,6 +1,5 @@
 """Account profile and logout."""
 
-import importlib
 import runpy
 from pathlib import Path
 
@@ -16,27 +15,28 @@ runpy.run_path(
 
 import streamlit as st
 
-import frontend.utils.api as _api
+import importlib
+import frontend.utils.reload as _etoz_reload
+importlib.reload(_etoz_reload)
+_etoz_reload.reload_frontend_utils()
 
-importlib.reload(_api)
-
-from frontend.utils.api import APIError, get_current_user
+from frontend.utils.api import APIError
 from frontend.utils.guards import hub_for_role, require_login
 from frontend.utils.session import (
     clear_auth_session,
-    get_access_token,
     init_session_state,
-    save_auth_session,
+    refresh_user_profile,
 )
 
 st.set_page_config(page_title="Profile | ETOZ", page_icon="👤", layout="centered")
 init_session_state()
 user = require_login()
 
-token = get_access_token()
 try:
-    user = get_current_user(token)
-    save_auth_session(token, user)
+    refreshed = refresh_user_profile()
+    if not refreshed:
+        raise APIError("Session expired")
+    user = refreshed
 except APIError as error:
     st.error(str(error))
     clear_auth_session()
@@ -47,6 +47,10 @@ st.title("Profile")
 st.page_link(hub_for_role(user.get("role")), label="Back to Home", icon="🏠")
 st.write(f"**Username:** {user['username']}")
 st.write(f"**Email:** {user['email']}")
+st.write(
+    f"**Email verified:** "
+    f"{'Yes' if user.get('email_verified') else 'No'}"
+)
 st.write(f"**Role:** {user.get('role', 'student')}")
 st.write(f"**Joined:** {str(user.get('created_at', ''))[:10]}")
 

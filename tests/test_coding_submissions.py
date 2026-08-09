@@ -6,24 +6,18 @@ from backend.models.progress import Progress
 from backend.models.question import Question
 from backend.models.submission import Submission
 from backend.services.docker_service import ExecutionResult
+from tests.helpers import register_and_login_headers
 
 
-def _auth_headers(client) -> dict[str, str]:
+def _auth_headers(client, database_session) -> dict[str, str]:
     """Create a test user and return a Bearer authorization header."""
 
-    client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": "coder",
-            "email": "coder@example.com",
-            "password": "password123",
-        },
+    return register_and_login_headers(
+        client,
+        database_session,
+        "coder",
+        email="coder@example.com",
     )
-    response = client.post(
-        "/api/v1/auth/login",
-        json={"username": "coder", "password": "password123"},
-    )
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def _seed_coding_question(database_session) -> Question:
@@ -59,10 +53,10 @@ def test_code_run_requires_authentication(client) -> None:
     assert response.status_code == 401
 
 
-def test_code_run_returns_stdout(client) -> None:
+def test_code_run_returns_stdout(client, database_session) -> None:
     """Free-run should return captured stdout from the sandbox."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     fake = ExecutionResult(
         mode="run",
         stdout="hello\n",
@@ -93,7 +87,7 @@ def test_coding_submission_persists_and_updates_progress(
 ) -> None:
     """A passing coding submit creates a Submission and Progress row."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     question = _seed_coding_question(database_session)
     fake = ExecutionResult(
         mode="grade",
@@ -150,7 +144,7 @@ def test_coding_submission_persists_and_updates_progress(
 def test_coding_submission_failed_tests(client, database_session) -> None:
     """Failing hidden tests should mark the submission failed with score < 100."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     question = _seed_coding_question(database_session)
     fake = ExecutionResult(
         mode="grade",
@@ -192,7 +186,7 @@ def test_mcq_submission_via_submissions_endpoint(
 ) -> None:
     """POST /submissions also grades MCQ answers without Docker."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     question = Question(
         title="MCQ via submissions",
         description="2 + 2?",
@@ -224,7 +218,7 @@ def test_list_submissions_returns_own_attempts(
 ) -> None:
     """GET /submissions should list persisted attempts for the current user."""
 
-    headers = _auth_headers(client)
+    headers = _auth_headers(client, database_session)
     question = Question(
         title="List submissions MCQ",
         description="1+1?",

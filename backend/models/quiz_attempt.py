@@ -18,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.database import Base
 
 if TYPE_CHECKING:
+    from backend.models.classroom import Classroom
     from backend.models.quiz import Quiz
     from backend.models.user import User
 
@@ -60,6 +61,11 @@ class QuizAttempt(Base):
         ForeignKey("quizzes.id", ondelete="CASCADE"),
         index=True,
     )
+    class_id: Mapped[int | None] = mapped_column(
+        ForeignKey("classes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     questions_total: Mapped[int] = mapped_column(Integer)
     questions_answered: Mapped[int] = mapped_column(Integer)
     questions_correct: Mapped[int] = mapped_column(Integer)
@@ -77,3 +83,6 @@ class QuizAttempt(Base):
 
     user: Mapped["User"] = relationship(back_populates="quiz_attempts")
     quiz: Mapped["Quiz"] = relationship(back_populates="attempts")
+    classroom: Mapped["Classroom | None"] = relationship(
+        back_populates="quiz_attempts"
+    )

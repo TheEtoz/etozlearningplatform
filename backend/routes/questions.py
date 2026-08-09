@@ -15,6 +15,7 @@ from backend.schemas.question import (
     QuestionResponse,
     QuestionType,
 )
+from backend.services.class_service import user_can_access_published_question
 from backend.services.question_service import (
     check_mcq_answer,
     get_question,
@@ -23,6 +24,26 @@ from backend.services.question_service import (
 )
 
 router = APIRouter(prefix="/questions", tags=["Questions"])
+
+
+def _student_accessible_question(
+    database: Session,
+    question_id: int,
+    *,
+    user_id: int,
+):
+    """Public/legacy questions, or private ones published in a class the user can access."""
+
+    question = get_question(database, question_id)
+    if question is None:
+        return None
+    if question.visibility != "private" or question.owner_id in (None, user_id):
+        return question
+    if user_can_access_published_question(
+        database, user_id=user_id, question_id=question_id
+    ):
+        return question
+    return None
 
 
 @router.get("", response_model=list[QuestionResponse])
@@ -44,6 +65,7 @@ def list_questions(
         difficulty=difficulty.value if difficulty else None,
         question_type=question_type.value if question_type else None,
         search=search,
+        visibility="public",
         offset=offset,
         limit=limit,
     )
@@ -53,12 +75,14 @@ def list_questions(
 @router.get("/{question_id}", response_model=QuestionResponse)
 def read_question(
     question_id: int,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     database: Session = Depends(get_db),
 ) -> dict:
     """Return one student-safe question."""
 
-    question = get_question(database, question_id)
+    question = _student_accessible_question(
+        database, question_id, user_id=current_user.id
+    )
     if question is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -74,11 +98,19 @@ def read_question(
 def check_question_answer(
     question_id: int,
     payload: AnswerCheckRequest,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     database: Session = Depends(get_db),
 ) -> AnswerCheckResponse:
     """Reveal the correct MCQ answer after an attempt."""
 
+    question = _student_accessible_question(
+        database, question_id, user_id=current_user.id
+    )
+    if question is None or question.type != "mcq":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCQ question not found",
+        )
     feedback = check_mcq_answer(database, question_id, payload.answer)
     if feedback is None:
         raise HTTPException(

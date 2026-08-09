@@ -19,18 +19,34 @@ class QuizServiceError(ValueError):
     """Raised for quiz admin/student operations that cannot complete."""
 
 
-def list_quizzes(database: Session) -> list[Quiz]:
-    """Return quizzes with ordered membership and topic tags loaded."""
+def _quiz_load_options():
+    return (
+        selectinload(Quiz.quiz_questions)
+        .selectinload(QuizQuestion.question)
+        .selectinload(Question.topic_tags)
+    )
+
+
+def list_quizzes(
+    database: Session,
+    *,
+    actor_id: int | None = None,
+) -> list[Quiz]:
+    """Return quizzes visible to the actor (public + own private)."""
+
+    from sqlalchemy import or_
 
     statement = (
-        select(Quiz)
-        .options(
-            selectinload(Quiz.quiz_questions)
-            .selectinload(QuizQuestion.question)
-            .selectinload(Question.topic_tags)
-        )
-        .order_by(Quiz.id)
+        select(Quiz).options(_quiz_load_options()).order_by(Quiz.id)
     )
+    if actor_id is not None:
+        statement = statement.where(
+            or_(
+                Quiz.visibility == "public",
+                Quiz.owner_id == actor_id,
+                Quiz.owner_id.is_(None),
+            )
+        )
     return list(database.scalars(statement).unique().all())
 
 
@@ -39,11 +55,7 @@ def get_quiz(database: Session, quiz_id: int) -> Quiz | None:
 
     statement = (
         select(Quiz)
-        .options(
-            selectinload(Quiz.quiz_questions)
-            .selectinload(QuizQuestion.question)
-            .selectinload(Question.topic_tags)
-        )
+        .options(_quiz_load_options())
         .where(Quiz.id == quiz_id)
     )
     return database.scalars(statement).unique().first()
@@ -70,14 +82,15 @@ def quiz_topics(quiz: Quiz) -> list[str]:
 def get_student_quiz_stats(
     database: Session,
     user_id: int,
+    *,
+    class_id: int | None = None,
 ) -> dict[int, dict[str, object]]:
     """Return completion and score summaries keyed by quiz id."""
 
-    attempts = database.scalars(
-        select(QuizAttempt)
-        .where(QuizAttempt.user_id == user_id)
-        .order_by(QuizAttempt.id.desc())
-    ).all()
+    statement = select(QuizAttempt).where(QuizAttempt.user_id == user_id)
+    if class_id is not None:
+        statement = statement.where(QuizAttempt.class_id == class_id)
+    attempts = database.scalars(statement.order_by(QuizAttempt.id.desc())).all()
 
     stats: dict[int, dict[str, object]] = {}
     for attempt in attempts:
@@ -96,21 +109,38 @@ def get_student_quiz_stats(
     return stats
 
 
-def create_quiz(database: Session, payload: QuizCreate) -> Quiz:
+def create_quiz(
+    database: Session,
+    payload: QuizCreate,
+    *,
+    owner_id: int | None = None,
+) -> Quiz:
     """Create an empty quiz shell for the teacher to populate."""
 
-    existing = database.scalars(
-        select(Quiz).where(Quiz.title == payload.title.strip())
-    ).first()
-    if existing is not None:
-        raise QuizServiceError("A quiz with this title already exists")
+    title = payload.title.strip()
+    visibility = (
+        payload.visibility.value
+        if hasattr(payload.visibility, "value")
+        else (payload.visibility or "private")
+    )
+    if owner_id is not None:
+        existing = database.scalars(
+            select(Quiz).where(
+                Quiz.title == title,
+                Quiz.owner_id == owner_id,
+            )
+        ).first()
+        if existing is not None:
+            raise QuizServiceError("You already have a quiz with this title")
 
     quiz = Quiz(
-        title=payload.title.strip(),
-        description=payload.description.strip(),
+        title=title,
+        description=(payload.description or "").strip(),
         topic=None,
         is_timed=payload.is_timed,
         duration_seconds=payload.duration_seconds,
+        owner_id=owner_id,
+        visibility=visibility,
     )
     database.add(quiz)
     database.commit()
@@ -120,14 +150,28 @@ def create_quiz(database: Session, payload: QuizCreate) -> Quiz:
     return refreshed
 
 
-def update_quiz(database: Session, quiz_id: int, payload: QuizUpdate) -> Quiz:
+def update_quiz(
+    database: Session,
+    quiz_id: int,
+    payload: QuizUpdate,
+    *,
+    actor_id: int | None = None,
+) -> Quiz:
     """Update quiz metadata."""
 
     quiz = get_quiz(database, quiz_id)
     if quiz is None:
         raise QuizServiceError("Quiz not found")
+    if (
+        actor_id is not None
+        and quiz.owner_id is not None
+        and quiz.owner_id != actor_id
+    ):
+        raise QuizServiceError("Only the author can edit this quiz")
 
     data = payload.model_dump(exclude_unset=True)
+    if "visibility" in data and data["visibility"] is not None:
+        data["visibility"] = data["visibility"].value
     if "is_timed" in data or "duration_seconds" in data:
         is_timed = data.get("is_timed", quiz.is_timed)
         duration = data.get("duration_seconds", quiz.duration_seconds)
@@ -146,22 +190,132 @@ def update_quiz(database: Session, quiz_id: int, payload: QuizUpdate) -> Quiz:
     return refreshed
 
 
-def delete_quiz(database: Session, quiz_id: int) -> None:
+def delete_quiz(
+    database: Session,
+    quiz_id: int,
+    *,
+    actor_id: int | None = None,
+) -> None:
     """Delete a quiz and its membership rows."""
 
     quiz = get_quiz(database, quiz_id)
     if quiz is None:
         raise QuizServiceError("Quiz not found")
+    if (
+        actor_id is not None
+        and quiz.owner_id is not None
+        and quiz.owner_id != actor_id
+    ):
+        raise QuizServiceError("Only the author can delete this quiz")
     database.delete(quiz)
     database.commit()
+
+
+def clone_quiz(
+    database: Session,
+    quiz_id: int,
+    *,
+    owner_id: int,
+    title_suffix: str = " (copy)",
+) -> Quiz:
+    """Deep-copy a quiz and its questions as private copies for the actor."""
+
+    from backend.services.question_service import (
+        QuestionServiceError,
+        clone_question,
+    )
+
+    source = get_quiz(database, quiz_id)
+    if source is None:
+        raise QuizServiceError("Quiz not found")
+    if source.visibility == "private" and source.owner_id not in (None, owner_id):
+        raise QuizServiceError("Cannot import a private quiz you do not own")
+
+    title = (source.title + title_suffix)[:200]
+    # Ensure unique title for this owner
+    base = title
+    counter = 2
+    while database.scalars(
+        select(Quiz).where(Quiz.owner_id == owner_id, Quiz.title == title)
+    ).first():
+        title = f"{base[:190]} {counter}"
+        counter += 1
+
+    clone = Quiz(
+        title=title,
+        description=source.description or "",
+        topic=source.topic,
+        is_timed=source.is_timed,
+        duration_seconds=source.duration_seconds,
+        owner_id=owner_id,
+        visibility="private",
+        source_quiz_id=source.id,
+    )
+    database.add(clone)
+    database.flush()
+
+    for position, link in enumerate(source.quiz_questions):
+        try:
+            question_copy = clone_question(
+                database,
+                link.question_id,
+                owner_id=owner_id,
+                title_suffix=" (copy)",
+                commit=False,
+            )
+        except QuestionServiceError as error:
+            database.rollback()
+            raise QuizServiceError(str(error)) from error
+        database.add(
+            QuizQuestion(
+                quiz_id=clone.id,
+                question_id=question_copy.id,
+                position=position,
+            )
+        )
+    database.commit()
+    refreshed = get_quiz(database, clone.id)
+    if refreshed is None:
+        raise QuizServiceError("Clone failed")
+    return refreshed
+
+
+def quiz_to_admin_dict(quiz: Quiz, *, actor_id: int | None = None) -> dict:
+    is_owner = actor_id is not None and quiz.owner_id == actor_id
+    return {
+        "id": quiz.id,
+        "title": quiz.title,
+        "description": quiz.description,
+        "is_timed": quiz.is_timed,
+        "duration_seconds": quiz.duration_seconds,
+        "question_ids": [link.question_id for link in quiz.quiz_questions],
+        "topics": quiz_topics(quiz),
+        "owner_id": quiz.owner_id,
+        "visibility": quiz.visibility or "public",
+        "source_quiz_id": quiz.source_quiz_id,
+        "can_edit": is_owner or quiz.owner_id is None,
+        "can_delete": is_owner,
+    }
+
+
+def actor_can_use_quiz(quiz: Quiz, actor_id: int) -> bool:
+    """Teachers may publish public/legacy quizzes or their own private ones."""
+
+    if quiz.visibility != "private":
+        return True
+    return quiz.owner_id in (None, actor_id)
 
 
 def set_quiz_questions(
     database: Session,
     quiz_id: int,
     question_ids: list[int],
+    *,
+    actor_id: int | None = None,
 ) -> Quiz:
     """Replace ordered quiz membership with the given bank question ids."""
+
+    from backend.services.question_service import actor_can_use_question
 
     quiz = get_quiz(database, quiz_id)
     if quiz is None:
@@ -174,6 +328,10 @@ def set_quiz_questions(
         question = database.get(Question, question_id)
         if question is None:
             raise QuizServiceError(f"Question {question_id} not found")
+        if actor_id is not None and not actor_can_use_question(question, actor_id):
+            raise QuizServiceError(
+                f"Cannot attach private question {question_id} you do not own"
+            )
 
     for link in list(quiz.quiz_questions):
         database.delete(link)
@@ -214,8 +372,14 @@ def complete_quiz(
     user_id: int,
     quiz_id: int,
     answers: dict[int, dict[str, str | None]],
+    class_id: int | None = None,
+    persist: bool = True,
 ) -> dict[str, object] | None:
-    """Grade mixed MCQ/coding quiz, persist attempt, update per-topic progress."""
+    """Grade mixed MCQ/coding quiz.
+
+    When ``persist`` is False (public demo), return the score/review without
+    writing submissions, attempts, or topic progress.
+    """
 
     quiz = get_quiz(database, quiz_id)
     if quiz is None:
@@ -243,15 +407,17 @@ def complete_quiz(
             score = 100 if is_correct else 0
             if not skipped:
                 answered += 1
-                database.add(
-                    Submission(
-                        user_id=user_id,
-                        question_id=question.id,
-                        answer=selected,
-                        score=score,
-                        status="passed" if is_correct else "failed",
+                if persist:
+                    database.add(
+                        Submission(
+                            user_id=user_id,
+                            question_id=question.id,
+                            class_id=class_id,
+                            answer=selected,
+                            score=score,
+                            status="passed" if is_correct else "failed",
+                        )
                     )
-                )
             results.append(
                 {
                     "question_id": question.id,
@@ -286,19 +452,21 @@ def complete_quiz(
             else:
                 answered += 1
                 score, is_correct, detail = _grade_coding_inline(question, code)
-                database.add(
-                    Submission(
-                        user_id=user_id,
-                        question_id=question.id,
-                        code=code,
-                        score=score,
-                        status=(
-                            "passed"
-                            if is_correct
-                            else ("error" if detail and score == 0 else "failed")
-                        ),
+                if persist:
+                    database.add(
+                        Submission(
+                            user_id=user_id,
+                            question_id=question.id,
+                            class_id=class_id,
+                            code=code,
+                            score=score,
+                            status=(
+                                "passed"
+                                if is_correct
+                                else ("error" if detail and score == 0 else "failed")
+                            ),
+                        )
                     )
-                )
                 results.append(
                     {
                         "question_id": question.id,
@@ -332,9 +500,22 @@ def complete_quiz(
         else Decimal("0.00")
     )
 
+    if not persist:
+        return {
+            "quiz_id": quiz.id,
+            "attempt_id": 0,
+            "questions_total": total,
+            "questions_answered": answered,
+            "questions_correct": correct,
+            "score": score_value,
+            "is_completed": True,
+            "results": results,
+        }
+
     attempt = QuizAttempt(
         user_id=user_id,
         quiz_id=quiz.id,
+        class_id=class_id,
         questions_total=total,
         questions_answered=answered,
         questions_correct=correct,

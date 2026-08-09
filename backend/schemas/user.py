@@ -37,6 +37,7 @@ class UserResponse(BaseModel):
     username: str
     email: EmailStr
     role: UserRole = UserRole.STUDENT
+    email_verified: bool = False
     created_at: datetime
 
 
@@ -45,3 +46,28 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class MessageResponse(BaseModel):
+    """Generic status message."""
+
+    message: str
+
+
+class EmailRequest(BaseModel):
+    """Email-only request for resend / forgot password."""
+
+    email: EmailStr
+
+
+class TokenRequest(BaseModel):
+    """Opaque token from an email link."""
+
+    token: str = Field(min_length=10, max_length=200)
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password using an emailed token."""
+
+    token: str = Field(min_length=10, max_length=200)
+    new_password: str = Field(min_length=8, max_length=128)

@@ -23,16 +23,23 @@ def test_all_expected_tables_are_registered() -> None:
 
     assert set(Base.metadata.tables) == {
         "users",
+        "auth_email_tokens",
         "quizzes",
         "questions",
         "quiz_attempts",
         "quiz_questions",
+        "subjects",
         "topics",
         "question_topics",
         "coding_modules",
-        "module_levels",
+        "module_blocks",
         "submissions",
         "progress",
+        "classes",
+        "class_enrollments",
+        "class_quizzes",
+        "class_modules",
+        "class_announcements",
     }
 
 
@@ -59,4 +66,5 @@ def test_submission_foreign_keys_define_safe_delete_behavior() -> None:
     assert on_delete_by_column == {
         "question_id": "RESTRICT",
         "user_id": "CASCADE",
+        "class_id": "SET NULL",
     }

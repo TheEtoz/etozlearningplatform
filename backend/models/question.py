@@ -7,6 +7,7 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     String,
     Text,
     func,
@@ -17,10 +18,11 @@ from backend.database import Base
 from backend.models.topic import question_topics
 
 if TYPE_CHECKING:
-    from backend.models.coding_module import ModuleLevel
+    from backend.models.coding_module import ModuleBlock
     from backend.models.quiz_question import QuizQuestion
     from backend.models.submission import Submission
     from backend.models.topic import Topic
+    from backend.models.user import User
 
 
 class Question(Base):
@@ -35,6 +37,10 @@ class Question(Base):
         CheckConstraint(
             "type IN ('mcq', 'coding')",
             name="valid_type",
+        ),
+        CheckConstraint(
+            "visibility IN ('public', 'private')",
+            name="valid_question_visibility",
         ),
     )
 
@@ -51,6 +57,17 @@ class Question(Base):
         server_default="python",
         index=True,
     )
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    visibility: Mapped[str] = mapped_column(
+        String(20),
+        default="public",
+        server_default="public",
+        index=True,
+    )
     choices: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     correct_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     starter_code: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -63,6 +80,7 @@ class Question(Base):
         server_default=func.now(),
     )
 
+    owner: Mapped["User | None"] = relationship(back_populates="owned_questions")
     topic_tags: Mapped[list["Topic"]] = relationship(
         secondary=question_topics,
         back_populates="questions",
@@ -71,7 +89,7 @@ class Question(Base):
         back_populates="question",
         cascade="all, delete-orphan",
     )
-    module_levels: Mapped[list["ModuleLevel"]] = relationship(
+    module_blocks: Mapped[list["ModuleBlock"]] = relationship(
         back_populates="question",
     )
     submissions: Mapped[list["Submission"]] = relationship(

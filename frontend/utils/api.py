@@ -6,14 +6,28 @@ import requests
 from dotenv import load_dotenv
 from requests.exceptions import ConnectionError, ReadTimeout, RequestException, Timeout
 
+from frontend.utils.public_mode import _setting, is_public_mode
+
 load_dotenv()
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
-BACKEND_URL = os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/")
+BACKEND_URL = _setting("BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/")
 API_BASE_URL = f"{BACKEND_URL}/api/v1"
 REQUEST_TIMEOUT_SECONDS = 15
 # Coding runs wait for Docker; allow more than the sandbox timeout.
 CODE_REQUEST_TIMEOUT_SECONDS = 45
+
+
+def _auth_headers(access_token: str | None) -> dict[str, str]:
+    if not access_token:
+        return {}
+    return {"Authorization": f"Bearer {access_token}"}
+
+
+def _use_guest_api(access_token: str | None) -> bool:
+    """Use no-auth public routes only for anonymous visitors in public mode."""
+
+    return is_public_mode() and not access_token
 
 
 class APIError(Exception):
@@ -78,7 +92,7 @@ def check_backend_health() -> bool:
 
 
 def register_user(username: str, email: str, password: str) -> dict:
-    """Create a new account."""
+    """Create a new account (unverified until email link is used)."""
 
     response = _request(
         "POST",
@@ -97,6 +111,50 @@ def login_user(username: str, password: str) -> dict:
         "POST",
         f"{API_BASE_URL}/auth/login",
         json={"username": username, "password": password},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def verify_email(token: str) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/auth/verify-email",
+        json={"token": token},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def resend_verification(email: str) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/auth/resend-verification",
+        json={"email": email},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def forgot_password(email: str) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/auth/forgot-password",
+        json={"email": email},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def reset_password(token: str, new_password: str) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/auth/reset-password",
+        json={"token": token, "new_password": new_password},
     )
     if not response.ok:
         raise APIError(_extract_error_message(response), response.status_code)
@@ -149,7 +207,7 @@ def list_questions(
 
 
 def list_quizzes(access_token: str) -> list[dict]:
-    """Fetch teacher-designed quiz cards for the practice catalog."""
+    """Legacy global quiz list (always empty; use class quizzes)."""
 
     response = _request(
         "GET",
@@ -161,30 +219,60 @@ def list_quizzes(access_token: str) -> list[dict]:
     return response.json()
 
 
-def get_quiz_questions(access_token: str, quiz_id: int) -> list[dict]:
-    """Fetch student-safe questions for one quiz."""
+def list_class_quizzes(access_token: str | None, class_id: int) -> list[dict]:
+    """Fetch published quiz cards for one enrolled (or public) class."""
 
-    response = _request(
-        "GET",
-        f"{API_BASE_URL}/quizzes/{quiz_id}/questions",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/classes/{class_id}/quizzes"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}/quizzes"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def get_quiz_questions(
+    access_token: str | None, quiz_id: int, class_id: int
+) -> list[dict]:
+    """Fetch student-safe questions for one class-published quiz."""
+
+    if _use_guest_api(access_token):
+        url = (
+            f"{API_BASE_URL}/public/classes/{class_id}/quizzes/{quiz_id}/questions"
+        )
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}/quizzes/{quiz_id}/questions"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
     if not response.ok:
         raise APIError(_extract_error_message(response), response.status_code)
     return response.json()
 
 
 def complete_quiz(
-    access_token: str,
+    access_token: str | None,
     quiz_id: int,
     answers: list[dict],
+    class_id: int,
 ) -> dict:
-    """Finish a mixed MCQ/coding quiz and receive score plus review."""
+    """Finish a class-scoped quiz and receive score plus review."""
 
+    if _use_guest_api(access_token):
+        url = (
+            f"{API_BASE_URL}/public/classes/{class_id}/quizzes/{quiz_id}/complete"
+        )
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}/quizzes/{quiz_id}/complete"
+        headers = _auth_headers(access_token)
     response = _request(
         "POST",
-        f"{API_BASE_URL}/quizzes/{quiz_id}/complete",
-        headers={"Authorization": f"Bearer {access_token}"},
+        url,
+        headers=headers,
         json={"answers": answers},
         timeout=CODE_REQUEST_TIMEOUT_SECONDS,
     )
@@ -193,14 +281,16 @@ def complete_quiz(
     return response.json()
 
 
-def get_coding_path(access_token: str) -> list[dict]:
-    """Fetch the free-jump coding path with completion flags."""
+def get_coding_path(access_token: str | None, class_id: int) -> list[dict]:
+    """Fetch the free-jump coding path for one class."""
 
-    response = _request(
-        "GET",
-        f"{API_BASE_URL}/path",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/classes/{class_id}/path"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}/path"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
     if not response.ok:
         raise APIError(_extract_error_message(response), response.status_code)
     return response.json()
@@ -219,12 +309,42 @@ def list_topics(access_token: str) -> list[dict]:
     return response.json()
 
 
-def create_topic(access_token: str, name: str) -> dict:
-    """Create a topic area from the teacher UI."""
+def create_topic(
+    access_token: str,
+    name: str,
+    *,
+    subject: str = "python",
+) -> dict:
+    """Create an area inside a subject from the teacher UI."""
 
     response = _request(
         "POST",
         f"{API_BASE_URL}/admin/topics",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"name": name, "subject": subject},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def list_subjects(access_token: str) -> list[dict]:
+    """Fetch subjects with nested areas."""
+
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/admin/subjects",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def create_subject(access_token: str, name: str) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/admin/subjects",
         headers={"Authorization": f"Bearer {access_token}"},
         json={"name": name},
     )
@@ -233,13 +353,32 @@ def create_topic(access_token: str, name: str) -> dict:
     return response.json()
 
 
-def run_code(access_token: str, code: str) -> dict:
-    """Execute Python in the Docker sandbox without grading or saving."""
+def clone_question(access_token: str, question_id: int) -> dict:
+    """Copy a bank question for quiz-local customization."""
 
     response = _request(
         "POST",
-        f"{API_BASE_URL}/code/run",
+        f"{API_BASE_URL}/admin/questions/{question_id}/clone",
         headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def run_code(access_token: str | None, code: str) -> dict:
+    """Execute Python in the Docker sandbox without grading or saving."""
+
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/code/run"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/code/run"
+        headers = _auth_headers(access_token)
+    response = _request(
+        "POST",
+        url,
+        headers=headers,
         json={"code": code},
         timeout=CODE_REQUEST_TIMEOUT_SECONDS,
     )
@@ -248,14 +387,28 @@ def run_code(access_token: str, code: str) -> dict:
     return response.json()
 
 
-def submit_code(access_token: str, question_id: int, code: str) -> dict:
-    """Grade coding against hidden tests and persist the submission."""
+def submit_code(
+    access_token: str | None,
+    question_id: int,
+    code: str,
+    class_id: int | None = None,
+) -> dict:
+    """Grade coding against hidden tests (persists only when not in public mode)."""
 
+    payload: dict = {"question_id": question_id, "code": code}
+    if class_id is not None:
+        payload["class_id"] = class_id
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/submissions/grade"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/submissions"
+        headers = _auth_headers(access_token)
     response = _request(
         "POST",
-        f"{API_BASE_URL}/submissions",
-        headers={"Authorization": f"Bearer {access_token}"},
-        json={"question_id": question_id, "code": code},
+        url,
+        headers=headers,
+        json=payload,
         timeout=CODE_REQUEST_TIMEOUT_SECONDS,
     )
     if not response.ok:
@@ -396,6 +549,19 @@ def create_quiz(access_token: str, payload: dict) -> dict:
     return response.json()
 
 
+def clone_quiz(access_token: str, quiz_id: int) -> dict:
+    """Deep-copy a quiz (and its questions) for class use."""
+
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/admin/quizzes/{quiz_id}/clone",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
 def update_quiz(access_token: str, quiz_id: int, payload: dict) -> dict:
     response = _request(
         "PUT",
@@ -430,11 +596,19 @@ def delete_quiz(access_token: str, quiz_id: int) -> None:
         raise APIError(_extract_error_message(response), response.status_code)
 
 
-def list_admin_modules(access_token: str) -> list[dict]:
+def list_admin_modules(
+    access_token: str,
+    *,
+    class_id: int | None = None,
+) -> list[dict]:
+    params = {}
+    if class_id is not None:
+        params["class_id"] = class_id
     response = _request(
         "GET",
         f"{API_BASE_URL}/admin/modules",
         headers={"Authorization": f"Bearer {access_token}"},
+        params=params or None,
     )
     if not response.ok:
         raise APIError(_extract_error_message(response), response.status_code)
@@ -477,10 +651,313 @@ def set_module_levels(access_token: str, module_id: int, question_ids: list[int]
     return response.json()
 
 
+def set_module_blocks(
+    access_token: str,
+    module_id: int,
+    blocks: list[dict],
+) -> dict:
+    response = _request(
+        "PUT",
+        f"{API_BASE_URL}/admin/modules/{module_id}/blocks",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"blocks": blocks},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+def get_admin_module(access_token: str, module_id: int) -> dict:
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/admin/modules/{module_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def check_mcq_answer(
+    access_token: str | None, question_id: int, answer: str
+) -> dict:
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/questions/{question_id}/check"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/questions/{question_id}/check"
+        headers = _auth_headers(access_token)
+    response = _request(
+        "POST",
+        url,
+        headers=headers,
+        json={"answer": answer},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
 def delete_module(access_token: str, module_id: int) -> None:
     response = _request(
         "DELETE",
         f"{API_BASE_URL}/admin/modules/{module_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+
+
+def list_media_library(access_token: str) -> list[dict]:
+    """List uploaded media files for teacher reuse."""
+
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/admin/media",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def upload_media(access_token: str, filename: str, content: bytes, content_type: str | None = None) -> dict:
+    """Upload a file into the backend media/ library."""
+
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/admin/media/upload",
+        headers={"Authorization": f"Bearer {access_token}"},
+        files={
+            "file": (filename, content, content_type or "application/octet-stream"),
+        },
+        timeout=CODE_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def media_link_snippet(
+    access_token: str,
+    url: str,
+    *,
+    label: str | None = None,
+) -> dict:
+    """Turn a URL into a LaTeX href / YouTube / media snippet."""
+
+    payload: dict = {"url": url}
+    if label:
+        payload["label"] = label
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/admin/media/link",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json=payload,
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def list_my_classes(access_token: str) -> list[dict]:
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/classes/mine",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def list_enrolled_classes(access_token: str) -> list[dict]:
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/classes/enrolled",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def list_public_classes(access_token: str | None = None) -> list[dict]:
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/classes"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/public"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def get_demo_class() -> dict:
+    """Return the preferred public class for the homepage."""
+
+    response = _request("GET", f"{API_BASE_URL}/public/demo-class")
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def get_class(access_token: str | None, class_id: int) -> dict:
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/classes/{class_id}"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def create_class(access_token: str, payload: dict) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/classes",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json=payload,
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def update_class(access_token: str, class_id: int, payload: dict) -> dict:
+    response = _request(
+        "PATCH",
+        f"{API_BASE_URL}/classes/{class_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json=payload,
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def delete_class(access_token: str, class_id: int) -> None:
+    response = _request(
+        "DELETE",
+        f"{API_BASE_URL}/classes/{class_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+
+
+def regenerate_class_code(access_token: str, class_id: int) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/classes/{class_id}/regenerate-code",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def enroll_in_class(
+    access_token: str,
+    *,
+    code: str | None = None,
+    class_id: int | None = None,
+) -> dict:
+    payload: dict = {}
+    if code:
+        payload["code"] = code
+    if class_id is not None:
+        payload["class_id"] = class_id
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/classes/enroll",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json=payload,
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def set_class_quizzes(access_token: str, class_id: int, quiz_ids: list[int]) -> dict:
+    response = _request(
+        "PUT",
+        f"{API_BASE_URL}/classes/{class_id}/quizzes",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"quiz_ids": quiz_ids},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def set_class_modules(access_token: str, class_id: int, module_ids: list[int]) -> dict:
+    response = _request(
+        "PUT",
+        f"{API_BASE_URL}/classes/{class_id}/modules",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"module_ids": module_ids},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def get_class_performance(access_token: str, class_id: int) -> list[dict]:
+    response = _request(
+        "GET",
+        f"{API_BASE_URL}/classes/{class_id}/performance",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def list_class_announcements(
+    access_token: str | None, class_id: int
+) -> list[dict]:
+    if _use_guest_api(access_token):
+        url = f"{API_BASE_URL}/public/classes/{class_id}/announcements"
+        headers: dict[str, str] = {}
+    else:
+        url = f"{API_BASE_URL}/classes/{class_id}/announcements"
+        headers = _auth_headers(access_token)
+    response = _request("GET", url, headers=headers)
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def create_class_announcement(
+    access_token: str,
+    class_id: int,
+    title: str,
+    body: str,
+) -> dict:
+    response = _request(
+        "POST",
+        f"{API_BASE_URL}/classes/{class_id}/announcements",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"title": title, "body": body},
+    )
+    if not response.ok:
+        raise APIError(_extract_error_message(response), response.status_code)
+    return response.json()
+
+
+def delete_class_announcement(
+    access_token: str,
+    class_id: int,
+    announcement_id: int,
+) -> None:
+    response = _request(
+        "DELETE",
+        f"{API_BASE_URL}/classes/{class_id}/announcements/{announcement_id}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
     if not response.ok:

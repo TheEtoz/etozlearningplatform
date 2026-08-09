@@ -1,4 +1,4 @@
-"""Canonical topic list for filters and teacher multi-select."""
+"""Canonical subject areas for filters and teacher multi-select."""
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -14,7 +14,16 @@ router = APIRouter(prefix="/topics", tags=["Topics"])
 
 @router.get("", response_model=list[TopicResponse])
 def read_topics(
+    subject: str | None = None,
     _: User = Depends(get_current_user),
     database: Session = Depends(get_db),
-) -> list:
-    return list_topics(database)
+) -> list[TopicResponse]:
+    return [
+        TopicResponse(
+            id=item.id,
+            name=item.name,
+            subject_id=item.subject_id,
+            subject=item.subject.name if item.subject else None,
+        )
+        for item in list_topics(database, subject=subject)
+    ]

@@ -1,4 +1,4 @@
-"""Streamlit registration — redirects to the correct hub by role."""
+"""Streamlit registration — username, email, password; login immediately."""
 
 import runpy
 from pathlib import Path
@@ -37,7 +37,11 @@ if is_logged_in():
 render_public_sidebar()
 
 st.title("Create account")
-st.caption("New accounts are students unless the username is listed in ADMIN_USERNAMES.")
+st.caption(
+    "Enter a username, email, and password. "
+    "You can log in right away — no email confirmation. "
+    "New accounts are students unless the username is listed in ADMIN_USERNAMES."
+)
 
 if not check_backend_health():
     st.error("Backend is not reachable. Start it with: `python run_backend.py`")
@@ -56,9 +60,10 @@ if submitted:
         try:
             register_user(username, email, password)
             token_data = login_user(username, password)
-            user = get_current_user(token_data["access_token"])
-            save_auth_session(token_data["access_token"], user)
-            st.switch_page(hub_for_role(user.get("role")))
+            access_token = token_data["access_token"]
+            user = get_current_user(access_token)
+            save_auth_session(access_token, user)
+            st.rerun()
         except APIError as error:
             st.error(str(error))
 
