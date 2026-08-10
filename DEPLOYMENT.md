@@ -20,7 +20,7 @@ ETOZ MVP deployment checklist. **Do not commit secrets** — set them in each ho
    $env:ETOZ_SEED_DEMO = "1"
    python scripts/seed_demo_remote.py
    ```
-   Migrations also run automatically on Render via `preDeployCommand`.
+   Migrations also run automatically on Render boot (`alembic upgrade head` in the start command; free tier has no `preDeployCommand`).
 
 2. **Render** — Dashboard → New → Blueprint → select this repo (`render.yaml`).
    When prompted, set:
