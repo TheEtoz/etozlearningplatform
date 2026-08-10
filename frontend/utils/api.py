@@ -11,7 +11,28 @@ from frontend.utils.public_mode import _setting, is_public_mode
 load_dotenv()
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
-BACKEND_URL = _setting("BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/")
+PRODUCTION_BACKEND_URL = "https://etoz-api.onrender.com"
+
+
+def _looks_like_streamlit_cloud() -> bool:
+    """Heuristic: Streamlit Community Cloud mount / sharing env."""
+
+    if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_SERVER_HEADLESS"):
+        if os.path.exists("/mount/src") or os.path.exists("/app"):
+            return True
+    return os.path.exists("/mount/src")
+
+
+def _resolve_backend_url() -> str:
+    configured = _setting("BACKEND_URL", "").rstrip("/")
+    if configured:
+        return configured
+    if _looks_like_streamlit_cloud():
+        return PRODUCTION_BACKEND_URL
+    return DEFAULT_BACKEND_URL
+
+
+BACKEND_URL = _resolve_backend_url()
 API_BASE_URL = f"{BACKEND_URL}/api/v1"
 REQUEST_TIMEOUT_SECONDS = 15
 # Coding runs wait for Docker; allow more than the sandbox timeout.

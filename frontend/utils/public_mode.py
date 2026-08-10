@@ -18,19 +18,21 @@ GUEST_USER: dict = {
 
 
 def _setting(name: str, default: str = "") -> str:
-    """Read from process env, then Streamlit secrets (Community Cloud)."""
+    """Prefer Streamlit secrets (Cloud), then process env, then default."""
 
-    value = os.getenv(name)
-    if value is not None and str(value).strip() != "":
-        return str(value)
     try:
         import streamlit as st
 
         secrets = getattr(st, "secrets", None)
         if secrets is not None and name in secrets:
-            return str(secrets[name])
+            value = str(secrets[name]).strip()
+            if value:
+                return value
     except Exception:
         pass
+    value = os.getenv(name)
+    if value is not None and str(value).strip() != "":
+        return str(value)
     return default
 
 
