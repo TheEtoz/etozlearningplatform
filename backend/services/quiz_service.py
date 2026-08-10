@@ -172,6 +172,17 @@ def update_quiz(
     data = payload.model_dump(exclude_unset=True)
     if "visibility" in data and data["visibility"] is not None:
         data["visibility"] = data["visibility"].value
+    if "title" in data and data["title"] is not None:
+        title = str(data["title"]).strip()
+        data["title"] = title
+        if quiz.owner_id is not None:
+            existing = database.query(Quiz).filter(
+                Quiz.owner_id == quiz.owner_id,
+                Quiz.title == title,
+                Quiz.id != quiz.id,
+            ).first()
+            if existing is not None:
+                raise QuizServiceError("You already have a quiz with this title")
     if "is_timed" in data or "duration_seconds" in data:
         is_timed = data.get("is_timed", quiz.is_timed)
         duration = data.get("duration_seconds", quiz.duration_seconds)

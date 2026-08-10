@@ -325,7 +325,6 @@ else:
                 st.rerun()
             return
 
-        st.markdown(f"### {quiz['title']}")
         order_key = f"quiz_order_{quiz_id}"
         server_ids = list(quiz.get("question_ids") or [])
         server_snap = f"quiz_server_{quiz_id}"
@@ -341,6 +340,19 @@ else:
             message="Question list changed — Save question list before closing.",
         )
 
+        title_key = f"dlg_title_{quiz_id}"
+        desc_key = f"dlg_desc_{quiz_id}"
+        if title_key not in st.session_state:
+            st.session_state[title_key] = quiz["title"]
+        if desc_key not in st.session_state:
+            st.session_state[desc_key] = quiz.get("description") or ""
+
+        new_title = st.text_input("Quiz title", key=title_key)
+        new_desc = st.text_area(
+            "Description (optional)",
+            height=80,
+            key=desc_key,
+        )
         timed = st.checkbox(
             "Timed quiz",
             value=quiz["is_timed"],
@@ -353,19 +365,27 @@ else:
             key=f"dlg_dur_{quiz_id}",
         )
         if st.button("Save quiz settings", key=f"dlg_qset_{quiz_id}"):
-            try:
-                update_quiz(
-                    token,
-                    quiz_id,
-                    {
-                        "is_timed": timed,
-                        "duration_seconds": int(duration_val) if timed else None,
-                    },
-                )
-                success_banner("Quiz settings saved.")
-                st.rerun()
-            except APIError as error:
-                st.error(str(error))
+            cleaned_title = (new_title or "").strip()
+            if len(cleaned_title) < 3:
+                st.error("Quiz title needs at least 3 characters.")
+            else:
+                try:
+                    update_quiz(
+                        token,
+                        quiz_id,
+                        {
+                            "title": cleaned_title,
+                            "description": new_desc or "",
+                            "is_timed": timed,
+                            "duration_seconds": (
+                                int(duration_val) if timed else None
+                            ),
+                        },
+                    )
+                    success_banner("Quiz settings saved.")
+                    st.rerun()
+                except APIError as error:
+                    st.error(str(error))
 
         st.markdown("#### Questions in this quiz")
         if not order:
