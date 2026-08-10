@@ -17,12 +17,6 @@ import uuid
 
 import streamlit as st
 
-import importlib
-import frontend.utils.reload as _etoz_reload
-
-importlib.reload(_etoz_reload)
-_etoz_reload.reload_frontend_utils()
-
 from frontend.utils.api import (
     APIError,
     create_question,

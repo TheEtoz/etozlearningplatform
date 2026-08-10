@@ -15,12 +15,6 @@ runpy.run_path(
 
 import streamlit as st
 
-import importlib
-import frontend.utils.reload as _etoz_reload
-
-importlib.reload(_etoz_reload)
-_etoz_reload.reload_frontend_utils()
-
 from frontend.utils.api import APIError, list_subjects
 from frontend.utils.guards import require_teacher
 from frontend.utils.session import get_access_token, init_session_state

@@ -17,12 +17,6 @@ import html
 
 import streamlit as st
 
-import importlib
-import frontend.utils.reload as _etoz_reload
-
-importlib.reload(_etoz_reload)
-_etoz_reload.reload_frontend_utils()
-
 from frontend.utils.api import APIError, get_coding_path, get_demo_class
 from frontend.utils.guards import require_student
 from frontend.utils.public_mode import is_public_mode
