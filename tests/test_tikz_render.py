@@ -1,5 +1,6 @@
 """TikZ document prep / compile helpers."""
 
+from frontend.utils.latex_markdown import prepare_lecture_markdown
 from frontend.utils.tikz_render import (
     build_tikz_document,
     compile_tikz_png,
@@ -43,3 +44,35 @@ def test_compile_user_unit_circle_svg() -> None:
     svg = compile_tikz_svg(SAMPLE)
     assert svg is not None
     assert b"<svg" in svg.lower() or svg.lstrip().startswith(b"<?xml")
+
+
+def test_compile_right_triangle_with_angle_pic() -> None:
+    source = r"""
+\begin{tikzpicture}[scale=0.9]
+\coordinate (A) at (0,0);
+\coordinate (B) at (4,0);
+\coordinate (C) at (4,3);
+\draw[thick] (A) -- (B) -- (C) -- cycle;
+\draw (3.7,0) -- (3.7,0.3) -- (4,0.3);
+\pic[draw,angle radius=9mm,"$\theta$",angle eccentricity=1.4] {angle=B--A--C};
+\node at (2,-0.4) {adjacent};
+\end{tikzpicture}
+"""
+    doc = build_tikz_document(source)
+    assert "angles" in doc
+    assert "quotes" in doc
+    png = compile_tikz_png(source)
+    assert png is not None
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_hash_brace_headers() -> None:
+    source = r"""
+\section{Trigonometric Identities}
+###{The Six Trigonometric Ratios}
+Hello $\theta$.
+"""
+    out = prepare_lecture_markdown(source)
+    assert "## Trigonometric Identities" in out
+    assert "### The Six Trigonometric Ratios" in out
+    assert "###{" not in out

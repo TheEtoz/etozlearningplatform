@@ -10,7 +10,7 @@ import urllib.request
 from frontend.utils.latex_markdown import _DEFAULT_COLOR_MAP
 
 _KROKI_URL = "https://kroki.io/"
-_TIMEOUT_SECONDS = 60
+_TIMEOUT_SECONDS = 90
 
 _ALWAYS_LIBRARIES = (
     "arrows.meta",
@@ -41,7 +41,25 @@ def _normalize_tikzpicture(source: str) -> str:
 
 
 def _needed_libraries(tikz: str) -> list[str]:
+    """Pick TikZ libraries based on picture features (angles, quotes, …)."""
+
     libs = list(_ALWAYS_LIBRARIES)
+    feature_libs: list[tuple[str, tuple[str, ...]]] = [
+        (r"\\pic\b|\{angle\s*=|angle eccentricity|angle radius", ("angles", "quotes")),
+        (r"quotes|/tikz/quotes|\"\$", ("quotes",)),
+        (r"\\matrix\b|matrix of nodes", ("matrix",)),
+        (r"\\fillbetween\b|intersections", ("intersections", "fillbetween")),
+        (r"backgrounds|on background layer", ("backgrounds",)),
+        (r"fit\s*=|\\node\[fit", ("fit",)),
+        (r"shadows|drop shadow", ("shadows",)),
+        (r"decorations\.pathreplacing|brace\b", ("decorations.pathreplacing",)),
+        (r"shapes\.geometric|ellipse\b|diamond\b", ("shapes.geometric",)),
+    ]
+    for pattern, needed in feature_libs:
+        if re.search(pattern, tikz, flags=re.IGNORECASE):
+            for name in needed:
+                if name not in libs:
+                    libs.append(name)
     for match in re.finditer(r"\\usetikzlibrary\{([^{}]+)\}", tikz):
         for part in match.group(1).split(","):
             name = part.strip()

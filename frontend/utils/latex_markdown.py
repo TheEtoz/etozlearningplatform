@@ -489,9 +489,22 @@ def _unwrap_layout_envs(text: str) -> str:
         "center",
         "flushleft",
         "flushright",
+        "quote",
+        "quotation",
     ):
         text = _unwrap_env(text, env)
     return text
+
+
+def _convert_hash_brace_headers(text: str) -> str:
+    """Convert hybrid ``###{Title}`` headers into Markdown."""
+
+    def repl(match: re.Match[str]) -> str:
+        level = len(match.group(1))
+        title = match.group(2).strip()
+        return f"\n\n{'#' * level} {title}\n\n"
+
+    return re.sub(r"(?m)^(#{1,6})\{([^{}]+)\}\s*$", repl, text)
 
 
 def _normalize_math_delimiters(text: str) -> str:
@@ -846,6 +859,7 @@ def latex_to_markdown(text: str) -> str:
 
     body = _convert_lists(body)
     body = _replace_media_commands(body)
+    body = _convert_hash_brace_headers(body)
 
     for command, level in (
         ("section*", "## "),
