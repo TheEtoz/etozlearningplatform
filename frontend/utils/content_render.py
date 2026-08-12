@@ -433,47 +433,184 @@ def _inject_inline_colors(chunk: str) -> str:
     return chunk
 
 
-def _render_callout_box(env: str, title: str, body: str) -> None:
-    accent, background, title_color = _BOX_STYLES.get(
-        env.lower(),
-        ("#334155", "#f8fafc", "#0f172a"),
+def _protect_math_segments(text: str) -> tuple[str, list[str]]:
+    """Replace ``$...$`` / ``$$...$$`` with placeholders before HTML escaping."""
+
+    protected: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"@@M{len(protected) - 1}@@"
+
+    text = re.sub(r"\$\$(.+?)\$\$", stash, text, flags=re.DOTALL)
+    text = re.sub(
+        r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)",
+        stash,
+        text,
+        flags=re.DOTALL,
     )
-    safe_title = html.escape(title or env.title())
-    uid = abs(hash((env, title, body))) % 10_000_000
-    # Scope styles to this callout so title + body share one visual band.
-    st.markdown(
-        f"""
-<style>
-.etoz-box-{uid} {{
-  border-left: 4px solid {accent};
-  background: {background};
-  padding: 0.85rem 1rem;
-  margin: 0.85rem 0;
-  border-radius: 0 0.55rem 0.55rem 0;
-}}
-.etoz-box-{uid} .etoz-box-title {{
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  color: {title_color};
-  font-size: 0.95rem;
-  margin: 0 0 0.45rem 0;
-}}
-</style>
-<div class="etoz-box-{uid}">
-<div class="etoz-box-title">{safe_title}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-    if body.strip():
-        # Body rendered as normal Markdown/KaTeX, visually attached via CSS hook.
-        st.markdown(
-            f'<div class="etoz-box-{uid}" style="padding-top:0;margin-top:-0.85rem;'
-            f'border-top-left-radius:0;border-top-right-radius:0;">',
-            unsafe_allow_html=True,
+    return text, protected
+
+
+def _restore_math_segments(text: str, protected: list[str]) -> str:
+    for index, value in enumerate(protected):
+        text = text.replace(f"@@M{index}@@", value)
+    return text
+
+
+def _inline_markdown_to_html(text: str) -> str:
+    """Convert a short markdown/KaTeX fragment to HTML (math left as ``$``)."""
+
+    colored = _inject_inline_colors(text or "")
+    plain, math_bits = _protect_math_segments(colored)
+    # Escape everything except our colour spans.
+    pieces = re.split(r"(<span\b[^>]*>.*?</span>)", plain, flags=re.DOTALL)
+    rebuilt: list[str] = []
+    for piece in pieces:
+        if piece.startswith("<span"):
+            rebuilt.append(piece)
+        else:
+            safe = html.escape(piece)
+            safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
+            safe = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", safe)
+            safe = re.sub(r"`([^`]+)`", r"<code>\1</code>", safe)
+            rebuilt.append(safe)
+    return _restore_math_segments("".join(rebuilt), math_bits)
+
+
+def _callout_body_to_html(body: str) -> str:
+    """Turn converted lecture-box markdown into HTML lists/paragraphs."""
+
+    lines = (body or "").splitlines()
+    html_parts: list[str] = []
+    list_type: str | None = None
+
+    def close_list() -> None:
+        nonlocal list_type
+        if list_type:
+            html_parts.append(f"</{list_type}>")
+            list_type = None
+
+    bullet = re.compile(r"^\s*[-*]\s+(.*)$")
+    numbered = re.compile(r"^\s*\d+\.\s+(.*)$")
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            close_list()
+            continue
+        bullet_match = bullet.match(line)
+        number_match = numbered.match(line)
+        if bullet_match:
+            if list_type != "ul":
+                close_list()
+                html_parts.append('<ul style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">')
+                list_type = "ul"
+            html_parts.append(
+                f'<li style="margin:0.35rem 0;line-height:1.55;">'
+                f"{_inline_markdown_to_html(bullet_match.group(1))}</li>"
+            )
+            continue
+        if number_match:
+            if list_type != "ol":
+                close_list()
+                html_parts.append('<ol style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">')
+                list_type = "ol"
+            html_parts.append(
+                f'<li style="margin:0.35rem 0;line-height:1.55;">'
+                f"{_inline_markdown_to_html(number_match.group(1))}</li>"
+            )
+            continue
+        close_list()
+        html_parts.append(
+            f'<p style="margin:0.4rem 0;line-height:1.55;">'
+            f"{_inline_markdown_to_html(line)}</p>"
         )
-        _render_markdown_segments(body)
-        st.markdown("</div>", unsafe_allow_html=True)
+    close_list()
+    return "\n".join(html_parts)
+
+
+def _render_callout_box(env: str, title: str, body: str) -> None:
+    """Render a keypoints/note/… card as one compiled HTML+KaTeX block."""
+
+    try:
+        accent, background, title_color = _BOX_STYLES.get(
+            env.lower(),
+            ("#334155", "#f8fafc", "#0f172a"),
+        )
+        safe_title = html.escape(title or env.title())
+        body_html = _callout_body_to_html(body)
+        # Rough height from content so the iframe is not cropped.
+        line_count = max(1, len([line for line in (body or "").splitlines() if line.strip()]))
+        char_count = len(body or "")
+        height = min(1000, max(130, 80 + line_count * 52 + char_count // 10))
+
+        components.html(
+            f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {{
+      delimiters: [
+        {{left: '$$', right: '$$', display: true}},
+        {{left: '$', right: '$', display: false}}
+      ],
+      throwOnError: false
+    }});"></script>
+  <style>
+    html, body {{
+      margin: 0; padding: 0;
+      font-family: "Source Sans Pro", system-ui, sans-serif;
+      color: #0f172a;
+      background: transparent;
+    }}
+    .box {{
+      border-left: 4px solid {accent};
+      background: {background};
+      padding: 0.85rem 1rem;
+      border-radius: 0 0.55rem 0.55rem 0;
+    }}
+    .title {{
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      color: {title_color};
+      font-size: 0.95rem;
+      margin: 0 0 0.35rem 0;
+    }}
+    .body {{ font-size: 0.98rem; }}
+    .body ul, .body ol {{ margin-top: 0.25rem; }}
+    .katex {{ font-size: 1.05em; }}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="title">{safe_title}</div>
+    <div class="body">
+      {body_html}
+    </div>
+  </div>
+</body>
+</html>
+""",
+            height=height,
+            scrolling=True,
+        )
+    except Exception:
+        # Soft fallback — still never crash the page.
+        with st.container(border=True):
+            st.markdown(f"**{title or env.title()}**")
+            if body.strip():
+                try:
+                    st.markdown(body)
+                except Exception:
+                    st.caption("Content unavailable.")
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
