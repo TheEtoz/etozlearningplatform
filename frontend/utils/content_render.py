@@ -46,6 +46,9 @@ _BOX_STYLES: dict[str, tuple[str, str, str]] = {
 
 # Cap display height; width follows the media's native aspect ratio.
 _MEDIA_MAX_HEIGHT_PX = 360
+# Lecture TikZ figures — compact, never full-bleed page width.
+_TIKZ_MAX_HEIGHT_PX = 260
+_TIKZ_MAX_WIDTH_PX = 420
 
 
 def youtube_video_id(url: str) -> str | None:
@@ -797,50 +800,21 @@ def _load_tikz_svg(source: str) -> bytes | None:
     return None
 
 
-def _svg_frame_height(svg: bytes) -> int:
-    """Estimate iframe height from SVG width/height or viewBox."""
-
-    try:
-        text = svg.decode("utf-8", errors="ignore")[:4000]
-    except Exception:
-        return 280
-    match = re.search(
-        r'viewBox\s*=\s*"([^"]+)"|height\s*=\s*"([0-9.]+)(?:px)?"',
-        text,
-        flags=re.I,
-    )
-    if match:
-        if match.group(1):
-            parts = match.group(1).split()
-            if len(parts) >= 4:
-                try:
-                    return min(360, max(120, int(float(parts[3])) + 32))
-                except ValueError:
-                    pass
-        elif match.group(2):
-            try:
-                return min(360, max(120, int(float(match.group(2))) + 32))
-            except ValueError:
-                pass
-    return 280
-
-
-def _show_svg_bytes(svg: bytes) -> None:
-    """Embed finished SVG without going through PIL."""
+def _show_tikz_image(data: bytes, *, mime: str) -> None:
+    """Show a compiled diagram at a compact lecture size (not full page width)."""
 
     import base64
 
-    encoded = base64.b64encode(svg).decode("ascii")
-    height = _svg_frame_height(svg)
-    components.html(
-        f"""
-<div style="width:100%;text-align:center;background:#fff;padding:0.35rem 0;">
-  <img alt="diagram" style="max-width:100%;height:auto;"
-       src="data:image/svg+xml;base64,{encoded}" />
-</div>
-""",
-        height=height,
-        scrolling=False,
+    encoded = base64.b64encode(data).decode("ascii")
+    max_h = _TIKZ_MAX_HEIGHT_PX
+    max_w = _TIKZ_MAX_WIDTH_PX
+    st.markdown(
+        f'<div style="text-align:center;margin:0.35rem 0 0.75rem 0;">'
+        f'<img alt="diagram" src="data:{mime};base64,{encoded}" '
+        f'style="display:inline-block;max-height:{max_h}px;max-width:min(100%,{max_w}px);'
+        f'width:auto;height:auto;object-fit:contain;" />'
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
 
@@ -866,10 +840,10 @@ def _render_tikz(source: str) -> None:
                     svg = None
 
         if png:
-            st.image(png, use_container_width=True)
+            _show_tikz_image(png, mime="image/png")
             return
         if svg:
-            _show_svg_bytes(svg)
+            _show_tikz_image(svg, mime="image/svg+xml")
             return
 
         st.caption("Diagram unavailable.")
