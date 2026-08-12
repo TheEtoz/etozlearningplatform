@@ -1,18 +1,26 @@
-"""Compile TikZ to PNG/SVG before display (no half-rendered browser preview)."""
+"""Compile TikZ diagrams via Kroki (used by the public render proxy)."""
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.request
 
-from frontend.utils.latex_markdown import _DEFAULT_COLOR_MAP
+# Keep in sync with frontend.utils.tikz_render for lecture colours.
+_DEFAULT_COLORS: dict[str, str] = {
+    "red1": "#E11D48",
+    "blue1": "#2563EB",
+    "teal1": "#0D9488",
+    "orange1": "#EA580C",
+    "green1": "#059669",
+    "purple1": "#7C3AED",
+    "yellow1": "#CA8A04",
+    "gray1": "#64748B",
+}
 
 _KROKI_URL = "https://kroki.io/"
 _TIMEOUT_SECONDS = 90
-
 _ALWAYS_LIBRARIES = (
     "arrows.meta",
     "calc",
@@ -20,11 +28,10 @@ _ALWAYS_LIBRARIES = (
     "patterns",
     "decorations.pathmorphing",
 )
+_MAX_SOURCE_CHARS = 80_000
 
 
 def _normalize_tikzpicture(source: str) -> str:
-    """Return a clean ``tikzpicture`` environment."""
-
     text = (source or "").strip()
     text = re.sub(r"\\end\{(?:center|figure|minipage)\}", "", text, flags=re.I)
     text = re.sub(
@@ -42,8 +49,6 @@ def _normalize_tikzpicture(source: str) -> str:
 
 
 def _needed_libraries(tikz: str) -> list[str]:
-    """Pick TikZ libraries based on picture features (angles, quotes, …)."""
-
     libs = list(_ALWAYS_LIBRARIES)
     feature_libs: list[tuple[str, tuple[str, ...]]] = [
         (r"\\pic\b|\{angle\s*=|angle eccentricity|angle radius", ("angles", "quotes")),
@@ -70,12 +75,10 @@ def _needed_libraries(tikz: str) -> list[str]:
 
 
 def _color_preamble(tikz: str) -> str:
-    """Define custom lecture colours referenced by the picture."""
-
     used = {item.lower() for item in re.findall(r"\b([a-zA-Z][a-zA-Z0-9]*)\b", tikz)}
     lines: list[str] = []
     seen: set[str] = set()
-    for name, hex_color in _DEFAULT_COLOR_MAP.items():
+    for name, hex_color in _DEFAULT_COLORS.items():
         if not (name.endswith("1") or name.lower() in used):
             continue
         if name in seen:
@@ -87,8 +90,6 @@ def _color_preamble(tikz: str) -> str:
 
 
 def build_tikz_document(source: str) -> str:
-    """Wrap a tikzpicture in a standalone document ready for Kroki."""
-
     tikz = _normalize_tikzpicture(source)
     if not tikz:
         return ""
@@ -110,62 +111,14 @@ def build_tikz_document(source: str) -> str:
     )
 
 
-def _backend_base_url() -> str:
-    """Prefer Streamlit secrets / env BACKEND_URL (avoid importing api.py)."""
+def compile_tikz(source: str, *, output_format: str = "png") -> bytes | None:
+    """Compile a tikzpicture to PNG or SVG bytes via Kroki."""
 
-    try:
-        import streamlit as st
-
-        secrets = getattr(st, "secrets", None)
-        if secrets is not None:
-            try:
-                val = secrets["BACKEND_URL"]  # type: ignore[index]
-            except Exception:
-                val = ""
-            if val:
-                return str(val).rstrip("/")
-    except Exception:
-        pass
-    configured = (os.getenv("BACKEND_URL") or "").rstrip("/")
-    if configured:
-        return configured
-    # Streamlit Community Cloud mount
-    if os.path.exists("/mount/src") or os.path.exists("/app"):
-        return "https://etoz-api.onrender.com"
-    return "http://127.0.0.1:8000"
-
-
-def _compile_via_backend(source: str, *, output_format: str) -> bytes | None:
-    """Ask our API (Render) to compile — Streamlit Cloud often cannot reach Kroki."""
-
-    base = _backend_base_url()
-    if not base:
+    if not source or len(source) > _MAX_SOURCE_CHARS:
         return None
-    url = f"{base}/api/v1/public/render/tikz"
-    payload = json.dumps(
-        {"source": source, "output_format": output_format}
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "image/png,image/svg+xml,*/*",
-            "User-Agent": "ETOZ-Learning-Platform/1.0",
-        },
-        method="POST",
-    )
-    # Cold start on free Render can be slow; local miss should fail fast.
-    timeout = 75 if "onrender.com" in base else 8
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read()
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError):
+    fmt = (output_format or "png").lower().strip()
+    if fmt not in {"png", "svg"}:
         return None
-    return data or None
-
-
-def _compile_via_kroki(source: str, *, output_format: str) -> bytes | None:
     document = build_tikz_document(source)
     if not document:
         return None
@@ -173,7 +126,7 @@ def _compile_via_kroki(source: str, *, output_format: str) -> bytes | None:
         {
             "diagram_source": document,
             "diagram_type": "tikz",
-            "output_format": output_format,
+            "output_format": fmt,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -193,36 +146,10 @@ def _compile_via_kroki(source: str, *, output_format: str) -> bytes | None:
         return None
     if not data:
         return None
-    return data
-
-
-def _compile_tikz(source: str, *, output_format: str) -> bytes | None:
-    # Prefer API proxy (works from Streamlit Cloud); fall back to Kroki direct.
-    data = _compile_via_backend(source, output_format=output_format)
-    if data:
-        return data
-    return _compile_via_kroki(source, output_format=output_format)
-
-
-def compile_tikz_png(source: str) -> bytes | None:
-    """Compile TikZ and return PNG bytes (Streamlit ``st.image`` safe)."""
-
-    data = _compile_tikz(source, output_format="png")
-    if not data:
+    if fmt == "png" and data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
-    # PNG magic number
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        return None
-    return data
-
-
-def compile_tikz_svg(source: str) -> bytes | None:
-    """Compile TikZ and return SVG bytes."""
-
-    data = _compile_tikz(source, output_format="svg")
-    if not data:
-        return None
-    head = data[:200].lower()
-    if b"<svg" not in head and b"<?xml" not in data[:50]:
-        return None
+    if fmt == "svg":
+        head = data[:200].lower()
+        if b"<svg" not in head and b"<?xml" not in data[:50]:
+            return None
     return data

@@ -55,10 +55,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if (
             path.startswith("/api/v1/code/")
             or path.startswith("/api/v1/public/code/")
+            or path.startswith("/api/v1/public/render/")
             or path == "/api/v1/submissions"
             or path == "/api/v1/public/submissions/grade"
         ):
-            # Code execution is expensive — keep this tighter.
+            # Code / diagram compile is expensive — keep this tighter.
             return min(settings.rate_limit_per_minute, 30)
         return settings.rate_limit_per_minute
 

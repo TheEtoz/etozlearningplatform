@@ -510,7 +510,9 @@ def _convert_hash_brace_headers(text: str) -> str:
 def _normalize_math_delimiters(text: str) -> str:
     """Convert LaTeX display/inline delimiters to KaTeX ``$$`` / ``$``."""
 
-    text = re.sub(r"\\\[(.*?)\\\]", r"\n\n$$\1$$\n\n", text, flags=re.DOTALL)
+    # Single blank line around display math — double gaps become huge Streamlit
+    # whitespace when each block is its own markdown segment.
+    text = re.sub(r"\\\[(.*?)\\\]", r"\n$$\1$$\n", text, flags=re.DOTALL)
     text = re.sub(r"\\\((.*?)\\\)", r"$\1$", text, flags=re.DOTALL)
     return text
 
@@ -903,6 +905,12 @@ def latex_to_markdown(text: str) -> str:
     )
     body = _restore_math(body, math_blocks)
 
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    # Collapse padding around display math / render markers (avoids empty bands).
+    body = re.sub(r"\n{2,}(\$\$)", r"\n\1", body)
+    body = re.sub(r"(\$\$)\n{2,}", r"\1\n", body)
+    body = re.sub(r"\n{2,}(@@ETOZ_)", r"\n\1", body)
+    body = re.sub(r"(@@[A-Z0-9_]+@@)\n{2,}", r"\1\n", body)
     body = re.sub(r"\n{3,}", "\n\n", body)
     body = body.strip()
     parts.append(body)

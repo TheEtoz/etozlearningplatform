@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -32,6 +34,14 @@ from backend.services.question_service import (
 )
 from backend.services.quiz_service import complete_quiz, get_quiz_questions
 from backend.services.submission_service import SubmissionError, grade_without_saving
+from backend.services.tikz_service import compile_tikz
+
+
+class TikzRenderRequest(BaseModel):
+    """Compile a lecture TikZ picture to PNG/SVG (proxy through Kroki)."""
+
+    source: str = Field(..., min_length=1, max_length=80_000)
+    output_format: str = Field(default="png", pattern="^(png|svg)$")
 
 router = APIRouter(prefix="/public", tags=["Public"])
 
@@ -243,6 +253,24 @@ def check_public_mcq(
             detail="MCQ question not found",
         )
     return AnswerCheckResponse(**feedback)
+
+
+@router.post("/render/tikz")
+def render_tikz(payload: TikzRenderRequest) -> Response:
+    """Compile TikZ for the Streamlit UI (Kroki is often blocked from Cloud).
+
+    Always available — not gated on public_mode — so logged-in teachers also
+    get diagrams. Rate-limited like code execution.
+    """
+
+    data = compile_tikz(payload.source, output_format=payload.output_format)
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Diagram could not be compiled",
+        )
+    media = "image/png" if payload.output_format == "png" else "image/svg+xml"
+    return Response(content=data, media_type=media)
 
 
 @router.post("/code/run", response_model=CodeRunResponse)

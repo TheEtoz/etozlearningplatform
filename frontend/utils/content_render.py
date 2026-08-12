@@ -484,6 +484,8 @@ def _callout_body_to_html(body: str) -> str:
     """Turn converted lecture-box markdown into HTML lists/paragraphs."""
 
     text = body or ""
+    # Keypoints/note boxes often keep raw LaTeX \\item lines.
+    text = re.sub(r"(?m)^[ \t]*\\item\b[ \t]*", "- ", text)
     # Keep display-math blocks intact across newlines.
     display_blocks: list[str] = []
 
@@ -591,6 +593,16 @@ def _markdown_table_to_html(table_md: str) -> str:
     return "".join(parts)
 
 
+def _estimate_katex_height(body: str, *, base: int = 48, per_line: int = 28) -> int:
+    """Tight iframe height — oversized frames show as large empty gaps."""
+
+    text = body or ""
+    display_math = len(re.findall(r"\$\$", text)) // 2
+    lines = [line for line in text.splitlines() if line.strip() and "$$" not in line]
+    # Display equations are taller than prose; ignore raw char-count inflation.
+    return min(520, max(96, base + len(lines) * per_line + display_math * 48))
+
+
 def _katex_document(body_html: str, *, height: int) -> None:
     """Show a finished HTML fragment with KaTeX already wired up."""
 
@@ -639,7 +651,7 @@ def _render_math_table(table_md: str) -> None:
         if not html_table:
             return
         rows = max(1, table_md.count("\n") + 1)
-        height = min(640, max(120, 48 + rows * 36))
+        height = min(400, max(100, 40 + rows * 34))
         _katex_document(html_table, height=height)
     except Exception:
         st.caption("Table unavailable.")
@@ -655,10 +667,7 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
         )
         safe_title = html.escape(title or env.title())
         body_html = _callout_body_to_html(body)
-        # Rough height from content so the iframe is not cropped.
-        line_count = max(1, len([line for line in (body or "").splitlines() if line.strip()]))
-        char_count = len(body or "")
-        height = min(1000, max(130, 80 + line_count * 52 + char_count // 10))
+        height = _estimate_katex_height(body, base=72, per_line=26)
 
         components.html(
             f"""
@@ -700,7 +709,8 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
       margin: 0 0 0.35rem 0;
     }}
     .body {{ font-size: 0.98rem; }}
-    .body ul, .body ol {{ margin-top: 0.25rem; }}
+    .body ul, .body ol {{ margin-top: 0.25rem; margin-bottom: 0.15rem; }}
+    .body p {{ margin: 0.35rem 0; }}
     .katex {{ font-size: 1.05em; }}
   </style>
 </head>
@@ -728,22 +738,91 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
                     st.caption("Content unavailable.")
 
 
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
-def _cached_tikz_png(source: str) -> bytes | None:
-    """Compile once to PNG — safe for Streamlit ``st.image`` / PIL."""
+# Bump when TikZ compile logic changes so stale session entries are ignored.
+_TIKZ_CACHE_VER = "v4-angles-api"
+_TIKZ_MISS_COOLDOWN_SEC = 90
+
+
+def _tikz_cache_key(source: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"{_TIKZ_CACHE_VER}\0{source}".encode("utf-8")).hexdigest()
+
+
+def _load_tikz_png(source: str) -> bytes | None:
+    """Compile PNG; cache successes only (failed compiles retry after cooldown)."""
+
+    import time
+
+    key = _tikz_cache_key(source)
+    hits: dict[str, bytes] = st.session_state.setdefault("_etoz_tikz_png", {})
+    if key in hits:
+        return hits[key]
+    misses: dict[str, float] = st.session_state.setdefault("_etoz_tikz_png_miss", {})
+    if key in misses and (time.time() - misses[key]) < _TIKZ_MISS_COOLDOWN_SEC:
+        return None
 
     from frontend.utils.tikz_render import compile_tikz_png
 
-    return compile_tikz_png(source)
+    data = compile_tikz_png(source)
+    if data:
+        hits[key] = data
+        misses.pop(key, None)
+        return data
+    misses[key] = time.time()
+    return None
 
 
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
-def _cached_tikz_svg(source: str) -> bytes | None:
-    """SVG fallback when PNG is unavailable."""
+def _load_tikz_svg(source: str) -> bytes | None:
+    """Compile SVG; cache successes only."""
+
+    import time
+
+    key = _tikz_cache_key(source)
+    hits: dict[str, bytes] = st.session_state.setdefault("_etoz_tikz_svg", {})
+    if key in hits:
+        return hits[key]
+    misses: dict[str, float] = st.session_state.setdefault("_etoz_tikz_svg_miss", {})
+    if key in misses and (time.time() - misses[key]) < _TIKZ_MISS_COOLDOWN_SEC:
+        return None
 
     from frontend.utils.tikz_render import compile_tikz_svg
 
-    return compile_tikz_svg(source)
+    data = compile_tikz_svg(source)
+    if data:
+        hits[key] = data
+        misses.pop(key, None)
+        return data
+    misses[key] = time.time()
+    return None
+
+
+def _svg_frame_height(svg: bytes) -> int:
+    """Estimate iframe height from SVG width/height or viewBox."""
+
+    try:
+        text = svg.decode("utf-8", errors="ignore")[:4000]
+    except Exception:
+        return 280
+    match = re.search(
+        r'viewBox\s*=\s*"([^"]+)"|height\s*=\s*"([0-9.]+)(?:px)?"',
+        text,
+        flags=re.I,
+    )
+    if match:
+        if match.group(1):
+            parts = match.group(1).split()
+            if len(parts) >= 4:
+                try:
+                    return min(360, max(120, int(float(parts[3])) + 32))
+                except ValueError:
+                    pass
+        elif match.group(2):
+            try:
+                return min(360, max(120, int(float(match.group(2))) + 32))
+            except ValueError:
+                pass
+    return 280
 
 
 def _show_svg_bytes(svg: bytes) -> None:
@@ -752,15 +831,16 @@ def _show_svg_bytes(svg: bytes) -> None:
     import base64
 
     encoded = base64.b64encode(svg).decode("ascii")
+    height = _svg_frame_height(svg)
     components.html(
         f"""
-<div style="width:100%;text-align:center;background:#fff;padding:0.5rem 0;">
+<div style="width:100%;text-align:center;background:#fff;padding:0.35rem 0;">
   <img alt="diagram" style="max-width:100%;height:auto;"
        src="data:image/svg+xml;base64,{encoded}" />
 </div>
 """,
-        height=420,
-        scrolling=True,
+        height=height,
+        scrolling=False,
     )
 
 
@@ -776,12 +856,12 @@ def _render_tikz(source: str) -> None:
         svg: bytes | None = None
         with st.spinner("Compiling diagram…"):
             try:
-                png = _cached_tikz_png(safe)
+                png = _load_tikz_png(safe)
             except Exception:
                 png = None
             if not png:
                 try:
-                    svg = _cached_tikz_svg(safe)
+                    svg = _load_tikz_svg(safe)
                 except Exception:
                     svg = None
 
