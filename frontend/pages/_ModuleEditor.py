@@ -762,7 +762,8 @@ with content_tab:
 
                 elif btype in ("lecture", "text"):
                     st.caption(
-                        "Write LaTeX or Markdown. Students only see the compiled view."
+                        "Write LaTeX or Markdown (colours, keypoints/note boxes, "
+                        "TikZ, math). Students only see the compiled view."
                     )
                     widget_key = f"me_md_{module_id}_{section_uid}_{uid}"
                     if widget_key not in st.session_state:
