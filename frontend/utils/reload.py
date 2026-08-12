@@ -10,6 +10,7 @@ import sys
 _HELPER_MODULES = (
     "frontend.utils.public_mode",
     "frontend.utils.latex_markdown",
+    "frontend.utils.tikz_render",
     "frontend.utils.content_render",
     "frontend.utils.lecture_pages",
     "frontend.utils.api",

@@ -476,81 +476,44 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_tikz(source: str) -> None:
-    """Compile a TikZ picture in-browser (TikZJax) with a visible fallback."""
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
+def _cached_tikz_svg(source: str) -> bytes | None:
+    """Compile once and reuse — students only see the finished SVG."""
 
-    safe = source.strip()
+    from frontend.utils.tikz_render import compile_tikz_svg
+
+    return compile_tikz_svg(source)
+
+
+def _render_tikz(source: str) -> None:
+    """Compile TikZ to SVG first, then show only the finished figure."""
+
+    safe = (source or "").strip()
     if not safe:
         return
-    if not safe.lstrip().startswith(r"\begin{tikzpicture}"):
-        safe = "\\begin{tikzpicture}\n" + safe + "\n\\end{tikzpicture}"
-    safe = safe.replace("</script>", "<\\/script>")
+
+    svg: bytes | None = None
+    # Spinner only — never flash a broken/partial diagram canvas.
+    with st.spinner("Compiling diagram…"):
+        try:
+            svg = _cached_tikz_svg(safe)
+        except Exception:
+            svg = None
+
+    if svg:
+        st.image(svg, use_container_width=True)
+        return
+
     uses_pgfplots = bool(
         re.search(r"\\begin\{axis\}|\\addplot\b|\\pgfplotsset\b", safe)
     )
     if uses_pgfplots:
-        st.info(
-            "This diagram uses pgfplots/axis features. Simple TikZ shapes render "
-            "here; for full pgfplots graphs, export the figure as PNG/SVG and add "
-            "it with an image / Multimedia block."
+        st.caption(
+            "This diagram needs pgfplots features that could not be compiled "
+            "here. Export it as PNG/SVG and attach it as an image."
         )
-    # Estimate height from drawing complexity; keep room for axes/labels.
-    lines = max(8, safe.count("\n") + 1)
-    height = min(720, max(280, 40 * min(lines, 14)))
-    components.html(
-        f"""
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <link rel="stylesheet" type="text/css"
-        href="https://tikzjax.com/v1/fonts.css">
-  <script src="https://tikzjax.com/v1/tikzjax.js"></script>
-  <style>
-    html, body {{
-      margin: 0; padding: 8px 4px; background: #fff;
-      font-family: system-ui, sans-serif;
-    }}
-    #status {{
-      color: #64748b; font-size: 13px; margin-bottom: 6px;
-    }}
-    #status.err {{ color: #b91c1c; }}
-    svg {{ max-width: 100%; height: auto; display: block; margin: 0 auto; }}
-  </style>
-</head>
-<body>
-  <div id="status">Rendering diagram…</div>
-  <div id="host">
-    <script type="text/tikz">
-{safe}
-    </script>
-  </div>
-  <script>
-    (function () {{
-      var status = document.getElementById("status");
-      var host = document.getElementById("host");
-      function done(ok, msg) {{
-        if (!status) return;
-        if (ok) {{ status.style.display = "none"; return; }}
-        status.className = "err";
-        status.textContent = msg || "Could not render this TikZ diagram.";
-      }}
-      document.addEventListener("tikzjax-load-finished", function () {{
-        done(!!host.querySelector("svg"), "TikZ finished without an SVG output.");
-      }});
-      setTimeout(function () {{
-        if (!host.querySelector("svg")) {{
-          done(false, "Diagram timed out or uses unsupported TikZ features (e.g. some pgfplots).");
-        }}
-      }}, 12000);
-    }})();
-  </script>
-</body>
-</html>
-""",
-        height=height,
-        scrolling=True,
-    )
+    else:
+        st.caption("Diagram could not be compiled. Check TikZ syntax and try again.")
 
 
 def _render_markdown_segments(body: str) -> bool:

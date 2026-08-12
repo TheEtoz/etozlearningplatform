@@ -406,6 +406,13 @@ def _extract_tikz(text: str) -> tuple[str, list[str]]:
 
     def repl(match: re.Match[str]) -> str:
         full = match.group(0).strip().replace("@@", "")
+        # Drop accidental layout wrappers left beside the picture.
+        full = re.sub(
+            r"\\end\{(?:center|figure|minipage)\}\s*$",
+            "",
+            full,
+            flags=re.I,
+        ).strip()
         blocks.append(full)
         return f"\n\n@@ETOZ_TIKZ_{len(blocks) - 1}@@\n\n"
 
