@@ -1,6 +1,10 @@
 """TikZ document prep / compile helpers."""
 
-from frontend.utils.tikz_render import build_tikz_document, compile_tikz_svg
+from frontend.utils.tikz_render import (
+    build_tikz_document,
+    compile_tikz_png,
+    compile_tikz_svg,
+)
 
 
 SAMPLE = r"""
@@ -29,7 +33,13 @@ def test_build_document_injects_colors_and_libraries() -> None:
     assert r"\end{center}" not in doc
 
 
-def test_compile_user_unit_circle_diagram() -> None:
+def test_compile_user_unit_circle_png() -> None:
+    png = compile_tikz_png(SAMPLE)
+    assert png is not None
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_compile_user_unit_circle_svg() -> None:
     svg = compile_tikz_svg(SAMPLE)
     assert svg is not None
     assert b"<svg" in svg.lower() or svg.lstrip().startswith(b"<?xml")

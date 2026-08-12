@@ -477,43 +477,73 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
+def _cached_tikz_png(source: str) -> bytes | None:
+    """Compile once to PNG — safe for Streamlit ``st.image`` / PIL."""
+
+    from frontend.utils.tikz_render import compile_tikz_png
+
+    return compile_tikz_png(source)
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
 def _cached_tikz_svg(source: str) -> bytes | None:
-    """Compile once and reuse — students only see the finished SVG."""
+    """SVG fallback when PNG is unavailable."""
 
     from frontend.utils.tikz_render import compile_tikz_svg
 
     return compile_tikz_svg(source)
 
 
+def _show_svg_bytes(svg: bytes) -> None:
+    """Embed finished SVG without going through PIL."""
+
+    import base64
+
+    encoded = base64.b64encode(svg).decode("ascii")
+    components.html(
+        f"""
+<div style="width:100%;text-align:center;background:#fff;padding:0.5rem 0;">
+  <img alt="diagram" style="max-width:100%;height:auto;"
+       src="data:image/svg+xml;base64,{encoded}" />
+</div>
+""",
+        height=420,
+        scrolling=True,
+    )
+
+
 def _render_tikz(source: str) -> None:
-    """Compile TikZ to SVG first, then show only the finished figure."""
+    """Compile TikZ fully, then show only the finished figure (never a traceback)."""
 
     safe = (source or "").strip()
     if not safe:
         return
 
-    svg: bytes | None = None
-    # Spinner only — never flash a broken/partial diagram canvas.
-    with st.spinner("Compiling diagram…"):
-        try:
-            svg = _cached_tikz_svg(safe)
-        except Exception:
-            svg = None
+    try:
+        png: bytes | None = None
+        svg: bytes | None = None
+        with st.spinner("Compiling diagram…"):
+            try:
+                png = _cached_tikz_png(safe)
+            except Exception:
+                png = None
+            if not png:
+                try:
+                    svg = _cached_tikz_svg(safe)
+                except Exception:
+                    svg = None
 
-    if svg:
-        st.image(svg, use_container_width=True)
-        return
+        if png:
+            st.image(png, use_container_width=True)
+            return
+        if svg:
+            _show_svg_bytes(svg)
+            return
 
-    uses_pgfplots = bool(
-        re.search(r"\\begin\{axis\}|\\addplot\b|\\pgfplotsset\b", safe)
-    )
-    if uses_pgfplots:
-        st.caption(
-            "This diagram needs pgfplots features that could not be compiled "
-            "here. Export it as PNG/SVG and attach it as an image."
-        )
-    else:
-        st.caption("Diagram could not be compiled. Check TikZ syntax and try again.")
+        st.caption("Diagram unavailable.")
+    except Exception:
+        # Absolute last resort — never surface stack traces to learners/teachers.
+        st.caption("Diagram unavailable.")
 
 
 def _render_markdown_segments(body: str) -> bool:
@@ -527,74 +557,91 @@ def _render_markdown_segments(body: str) -> bool:
     for part in parts:
         if not part:
             continue
-        image_marker = _IMAGE_MARKER.fullmatch(part.strip())
-        if image_marker:
-            render_image_file(image_marker.group(1).strip())
-            rendered_any = True
+        try:
+            image_marker = _IMAGE_MARKER.fullmatch(part.strip())
+            if image_marker:
+                render_image_file(image_marker.group(1).strip())
+                rendered_any = True
+                continue
+            md_image = _MD_IMAGE.fullmatch(part.strip())
+            if md_image:
+                render_image_file(md_image.group(2).strip())
+                rendered_any = True
+                continue
+            md_link = _MD_LINK.fullmatch(part.strip())
+            if md_link:
+                render_download_link(md_link.group(2).strip(), md_link.group(1).strip())
+                rendered_any = True
+                continue
+            if part.strip():
+                colored = _inject_inline_colors(part)
+                st.markdown(colored, unsafe_allow_html=True)
+                rendered_any = True
+        except Exception:
             continue
-        md_image = _MD_IMAGE.fullmatch(part.strip())
-        if md_image:
-            render_image_file(md_image.group(2).strip())
-            rendered_any = True
-            continue
-        md_link = _MD_LINK.fullmatch(part.strip())
-        if md_link:
-            render_download_link(md_link.group(2).strip(), md_link.group(1).strip())
-            rendered_any = True
-            continue
-        if part.strip():
-            colored = _inject_inline_colors(part)
-            st.markdown(colored, unsafe_allow_html=True)
-            rendered_any = True
     return rendered_any
 
 
 def render_markdown_content(text: str, *, empty_caption: str | None = None) -> None:
     """Render lecture text with images, colours, callouts, and TikZ.
 
-    Lecture blocks support ``\\includegraphics``, ``\\href``, ``\\textcolor``,
-    callout envs (``keypoints``, ``note``, …), and ``tikzpicture``.
+    Errors are swallowed so Streamlit never shows a red traceback to users.
     """
 
-    body = prepare_lecture_markdown(text or "")
+    try:
+        body = prepare_lecture_markdown(text or "")
+    except Exception:
+        if empty_caption:
+            st.caption(empty_caption)
+        else:
+            st.caption("Content unavailable.")
+        return
+
     if not body.strip():
         if empty_caption:
             st.caption(empty_caption)
         return
 
-    rendered_any = False
-    cursor = 0
-    # Split on TikZ and callout block markers while preserving order.
-    block_pattern = re.compile(
-        r"(@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@|@@ETOZ_BOX:[^@]+@@.*?@@ETOZ_BOX_END@@)",
-        re.DOTALL,
-    )
-    for match in block_pattern.finditer(body):
-        before = body[cursor : match.start()]
-        if before.strip():
-            rendered_any = _render_markdown_segments(before) or rendered_any
-        block = match.group(1)
-        if block.startswith(_TIKZ_START):
-            tikz_src = block[len(_TIKZ_START) : -len(_TIKZ_END)].strip()
-            _render_tikz(tikz_src)
-            rendered_any = True
-        else:
-            header = _BOX_START.match(block)
-            if header:
-                env = header.group(1).strip()
-                title = header.group(2).strip()
-                inner = block[header.end() :]
-                if inner.endswith(_BOX_END):
-                    inner = inner[: -len(_BOX_END)]
-                _render_callout_box(env, title, inner.strip())
-                rendered_any = True
-            else:
-                rendered_any = _render_markdown_segments(block) or rendered_any
-        cursor = match.end()
+    try:
+        rendered_any = False
+        cursor = 0
+        block_pattern = re.compile(
+            r"(@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@|@@ETOZ_BOX:[^@]+@@.*?@@ETOZ_BOX_END@@)",
+            re.DOTALL,
+        )
+        for match in block_pattern.finditer(body):
+            before = body[cursor : match.start()]
+            if before.strip():
+                rendered_any = _render_markdown_segments(before) or rendered_any
+            block = match.group(1)
+            try:
+                if block.startswith(_TIKZ_START):
+                    tikz_src = block[len(_TIKZ_START) : -len(_TIKZ_END)].strip()
+                    _render_tikz(tikz_src)
+                    rendered_any = True
+                else:
+                    header = _BOX_START.match(block)
+                    if header:
+                        env = header.group(1).strip()
+                        title = header.group(2).strip()
+                        inner = block[header.end() :]
+                        if inner.endswith(_BOX_END):
+                            inner = inner[: -len(_BOX_END)]
+                        _render_callout_box(env, title, inner.strip())
+                        rendered_any = True
+                    else:
+                        rendered_any = (
+                            _render_markdown_segments(block) or rendered_any
+                        )
+            except Exception:
+                st.caption("Part of this section could not be shown.")
+            cursor = match.end()
 
-    tail = body[cursor:]
-    if tail.strip():
-        rendered_any = _render_markdown_segments(tail) or rendered_any
+        tail = body[cursor:]
+        if tail.strip():
+            rendered_any = _render_markdown_segments(tail) or rendered_any
 
-    if not rendered_any and empty_caption:
-        st.caption(empty_caption)
+        if not rendered_any and empty_caption:
+            st.caption(empty_caption)
+    except Exception:
+        st.caption(empty_caption or "Content unavailable.")

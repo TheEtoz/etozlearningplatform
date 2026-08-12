@@ -33,7 +33,15 @@ def render_download_link(url: str, label: str | None = None) -> None:
 
 
 def render_markdown_content(text: str, *, empty_caption: str | None = None) -> None:
-    _content_render().render_markdown_content(text, empty_caption=empty_caption)
+    try:
+        _content_render().render_markdown_content(
+            text, empty_caption=empty_caption
+        )
+    except Exception:
+        # Never let lecture rendering crash the page with a red traceback.
+        import streamlit as st
+
+        st.caption(empty_caption or "Content unavailable.")
 
 
 def render_media_item(item: dict[str, Any]) -> None:
