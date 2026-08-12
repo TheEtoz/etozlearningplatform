@@ -17,6 +17,30 @@ _VIDEO_EXT = {".mp4", ".webm", ".ogg", ".mov"}
 _IMAGE_MARKER = re.compile(r"@@ETOZ_IMAGE:([^@]+)@@")
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_FG_MARKER = re.compile(r"@@ETOZ_FG:([^|]+)\|((?:(?!@@).)*?)@@", re.DOTALL)
+_BG_MARKER = re.compile(r"@@ETOZ_BG:([^|]+)\|((?:(?!@@).)*?)@@", re.DOTALL)
+_BOX_START = re.compile(r"@@ETOZ_BOX:([^|]+)\|((?:(?!@@).)*?)@@")
+_BOX_END = "@@ETOZ_BOX_END@@"
+_TIKZ_START = "@@ETOZ_TIKZ@@"
+_TIKZ_END = "@@ETOZ_TIKZ_END@@"
+
+_BOX_STYLES: dict[str, tuple[str, str, str]] = {
+    # env: (accent, background, title color)
+    "keypoints": ("#2563eb", "#eff6ff", "#1e3a8a"),
+    "keypoint": ("#2563eb", "#eff6ff", "#1e3a8a"),
+    "formula": ("#7c3aed", "#f5f3ff", "#4c1d95"),
+    "note": ("#0d9488", "#f0fdfa", "#115e59"),
+    "tip": ("#059669", "#ecfdf5", "#065f46"),
+    "info": ("#0284c7", "#f0f9ff", "#075985"),
+    "warning": ("#d97706", "#fffbeb", "#92400e"),
+    "caution": ("#d97706", "#fffbeb", "#92400e"),
+    "important": ("#e11d48", "#fff1f2", "#9f1239"),
+    "alert": ("#e11d48", "#fff1f2", "#9f1239"),
+    "example": ("#4f46e5", "#eef2ff", "#312e81"),
+    "definition": ("#0f766e", "#f0fdfa", "#134e4a"),
+    "theorem": ("#6d28d9", "#f5f3ff", "#4c1d95"),
+    "remark": ("#64748b", "#f8fafc", "#334155"),
+}
 
 # Cap display height; width follows the media's native aspect ratio.
 _MEDIA_MAX_HEIGHT_PX = 360
@@ -388,19 +412,93 @@ def media_items_from_payload(payload: dict[str, Any] | None) -> list[dict[str, A
     return [item] if item else []
 
 
-def render_markdown_content(text: str, *, empty_caption: str | None = None) -> None:
-    """Render lecture text with visible images and blue underlined links.
+def _inject_inline_colors(chunk: str) -> str:
+    """Turn colour markers into HTML spans Streamlit can render."""
 
-    Lecture blocks support standard ``\\includegraphics{…}`` and
-    ``\\href{url}{label}`` (plus Markdown equivalents). Video/YouTube belongs
-    in a Multimedia block, not inline macros.
-    """
+    def fg_repl(match: re.Match[str]) -> str:
+        color = html.escape(match.group(1).strip(), quote=True)
+        inner = match.group(2)
+        return f'<span style="color:{color};font-weight:600;">{inner}</span>'
 
-    body = prepare_lecture_markdown(text or "")
-    if not body.strip():
-        if empty_caption:
-            st.caption(empty_caption)
+    def bg_repl(match: re.Match[str]) -> str:
+        color = html.escape(match.group(1).strip(), quote=True)
+        inner = match.group(2)
+        return (
+            f'<span style="background:{color};padding:0.1em 0.35em;'
+            f'border-radius:0.3em;">{inner}</span>'
+        )
+
+    chunk = _FG_MARKER.sub(fg_repl, chunk)
+    chunk = _BG_MARKER.sub(bg_repl, chunk)
+    return chunk
+
+
+def _render_callout_box(env: str, title: str, body: str) -> None:
+    accent, background, title_color = _BOX_STYLES.get(
+        env.lower(),
+        ("#334155", "#f8fafc", "#0f172a"),
+    )
+    safe_title = html.escape(title or env.title())
+    st.markdown(
+        f"""
+<div style="border-left:4px solid {accent};background:{background};
+padding:0.85rem 1rem 0.35rem 1rem;margin:0.85rem 0 0 0;
+border-radius:0 0.55rem 0 0;">
+<p style="margin:0;font-weight:800;letter-spacing:0.02em;
+color:{title_color};font-size:0.95rem;">{safe_title}</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    if body.strip():
+        st.markdown(
+            f"""
+<div style="border-left:4px solid {accent};background:{background};
+padding:0.15rem 1rem 0.85rem 1rem;margin:0 0 0.85rem 0;
+border-radius:0 0 0.55rem 0;">
+""",
+            unsafe_allow_html=True,
+        )
+        _render_markdown_segments(body)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_tikz(source: str) -> None:
+    """Compile a TikZ picture in-browser with TikZJax."""
+
+    # TikZJax expects a script type="text/tikz" containing the picture.
+    safe = source.strip()
+    if not safe:
         return
+    # Escape </script> so the HTML document cannot break out.
+    safe = safe.replace("</script>", "<\\/script>")
+    components.html(
+        f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" type="text/css"
+        href="https://tikzjax.com/v1/fonts.css">
+  <script src="https://tikzjax.com/v1/tikzjax.js"></script>
+  <style>
+    body {{ margin: 0; padding: 0.5rem 0; background: transparent; }}
+    svg {{ max-width: 100%; height: auto; display: block; margin: 0 auto; }}
+  </style>
+</head>
+<body>
+  <script type="text/tikz">
+{safe}
+  </script>
+</body>
+</html>
+""",
+        height=360,
+        scrolling=True,
+    )
+
+
+def _render_markdown_segments(body: str) -> bool:
+    """Render one prepared markdown chunk (no outer box/tikz splitting)."""
 
     token_pattern = re.compile(
         r"(@@ETOZ_IMAGE:[^@]+@@|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\))"
@@ -426,7 +524,58 @@ def render_markdown_content(text: str, *, empty_caption: str | None = None) -> N
             rendered_any = True
             continue
         if part.strip():
-            st.markdown(part)
+            colored = _inject_inline_colors(part)
+            st.markdown(colored, unsafe_allow_html=True)
             rendered_any = True
+    return rendered_any
+
+
+def render_markdown_content(text: str, *, empty_caption: str | None = None) -> None:
+    """Render lecture text with images, colours, callouts, and TikZ.
+
+    Lecture blocks support ``\\includegraphics``, ``\\href``, ``\\textcolor``,
+    callout envs (``keypoints``, ``note``, …), and ``tikzpicture``.
+    """
+
+    body = prepare_lecture_markdown(text or "")
+    if not body.strip():
+        if empty_caption:
+            st.caption(empty_caption)
+        return
+
+    rendered_any = False
+    cursor = 0
+    # Split on TikZ and callout block markers while preserving order.
+    block_pattern = re.compile(
+        r"(@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@|@@ETOZ_BOX:[^@]+@@.*?@@ETOZ_BOX_END@@)",
+        re.DOTALL,
+    )
+    for match in block_pattern.finditer(body):
+        before = body[cursor : match.start()]
+        if before.strip():
+            rendered_any = _render_markdown_segments(before) or rendered_any
+        block = match.group(1)
+        if block.startswith(_TIKZ_START):
+            tikz_src = block[len(_TIKZ_START) : -len(_TIKZ_END)].strip()
+            _render_tikz(tikz_src)
+            rendered_any = True
+        else:
+            header = _BOX_START.match(block)
+            if header:
+                env = header.group(1).strip()
+                title = header.group(2).strip()
+                inner = block[header.end() :]
+                if inner.endswith(_BOX_END):
+                    inner = inner[: -len(_BOX_END)]
+                _render_callout_box(env, title, inner.strip())
+                rendered_any = True
+            else:
+                rendered_any = _render_markdown_segments(block) or rendered_any
+        cursor = match.end()
+
+    tail = body[cursor:]
+    if tail.strip():
+        rendered_any = _render_markdown_segments(tail) or rendered_any
+
     if not rendered_any and empty_caption:
         st.caption(empty_caption)

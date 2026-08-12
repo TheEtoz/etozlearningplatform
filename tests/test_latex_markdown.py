@@ -46,7 +46,6 @@ Also $m \times n$ and $A^T$.
     assert "3 & 3 & 0" in out
     assert r"\times" in out
     assert "$$" in out
-    # Must not strip matrix rows into prose newlines.
     assert "8 & 0 & -7" in out
 
 
@@ -68,16 +67,18 @@ def test_enumerate_options_and_keypoints_box() -> None:
 \end{document}
 """
     out = prepare_lecture_markdown(source)
-    assert "Key points" in out
+    assert "@@ETOZ_BOX:keypoints|Key points@@" in out
+    assert "@@ETOZ_BOX_END@@" in out
     assert "Addition requires matching shapes" in out
     assert "1. First practice question" in out
     assert "[nosep]" not in out
-    assert "keypoints" not in out.lower() or "Key points" in out
 
 
-def test_textcolor_unwrapped_inside_math() -> None:
+def test_textcolor_preserved_in_math_with_custom_names() -> None:
     source = r"""
 \documentclass{article}
+\definecolor{red1}{HTML}{E11D48}
+\definecolor{blue1}{HTML}{2563EB}
 \begin{document}
 \[
 \begin{pmatrix} \textcolor{red1}{1} & \textcolor{blue1}{3} \end{pmatrix}
@@ -85,6 +86,49 @@ def test_textcolor_unwrapped_inside_math() -> None:
 \end{document}
 """
     out = prepare_lecture_markdown(source)
-    assert r"\textcolor" not in out
+    assert r"\textcolor{#e11d48}{1}" in out
+    assert r"\textcolor{#2563eb}{3}" in out
     assert r"\begin{pmatrix}" in out
-    assert "1" in out and "3" in out
+
+
+def test_prose_textcolor_and_colorbox() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\textcolor{red}{Important} and \colorbox{yellow}{highlight}.
+\end{document}
+"""
+    out = prepare_lecture_markdown(source)
+    assert ":red[Important]" in out
+    assert ":yellow-background[highlight]" in out
+
+
+def test_tikzpicture_becomes_marker() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\begin{tikzpicture}
+\draw (0,0) -- (1,1);
+\end{tikzpicture}
+\end{document}
+"""
+    out = prepare_lecture_markdown(source)
+    assert "@@ETOZ_TIKZ@@" in out
+    assert r"\begin{tikzpicture}" in out
+    assert r"\draw (0,0) -- (1,1);" in out
+    assert "@@ETOZ_TIKZ_END@@" in out
+
+
+def test_note_and_warning_boxes() -> None:
+    source = r"""
+\begin{note}
+Remember the order of operations.
+\end{note}
+\begin{warning}
+Do not divide by zero.
+\end{warning}
+"""
+    out = prepare_lecture_markdown(source)
+    assert "@@ETOZ_BOX:note|Note@@" in out
+    assert "@@ETOZ_BOX:warning|Warning@@" in out
+    assert "Do not divide by zero" in out
