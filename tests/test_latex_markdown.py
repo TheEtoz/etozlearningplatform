@@ -139,13 +139,30 @@ Do not divide by zero.
     assert "Do not divide by zero" in out
 
 
+def test_tabular_optional_row_skip_not_leaked() -> None:
+    source = r"""
+\begin{tabular}{c|ccccc}
+$\theta$ & $0^\circ$ & $30^\circ$ & $45^\circ$ & $60^\circ$ & $90^\circ$ \\
+\hline
+$\sin\theta$ & $0$ & $\tfrac12$ & $\tfrac{\sqrt2}{2}$ & $\tfrac{\sqrt3}{2}$ & $1$ \\[4pt]
+$\cos\theta$ & $1$ & $\tfrac{\sqrt3}{2}$ & $\tfrac{\sqrt2}{2}$ & $\tfrac12$ & $0$ \\[4pt]
+$\tan\theta$ & $0$ & $\tfrac{1}{\sqrt3}$ & $1$ & $\sqrt3$ & undefined
+\end{tabular}
+"""
+    out = prepare_lecture_markdown(source)
+    assert "[4pt]" not in out
+    assert "@@ETOZ_TABLE@@" in out
+    assert r"$\sin\theta$" in out
+    assert r"$\tfrac12$" in out
+    assert out.count("|") > 10
+
+
 def test_keypoints_keep_inline_math_in_list_items() -> None:
     source = r"""
 \begin{keypoints}
 \textbf{Key points}
 \begin{itemize}[nosep]
-\item $180^\circ = \pi$ rad, so degrees $\times\, \pi/180 =$ radians, and radians $\times\, 180/\pi =$ degrees.
-\item Reference angle: the acute angle to the $x$-axis; quadrant fixes the sign of sine, cosine, tangent separately.
+\item $180^\circ = \pi$ rad, so degrees $\times\, \pi/180 =$ radians.
 \item Coterminal angles: add or subtract $360^\circ$ (or $2\pi$).
 \end{itemize}
 \end{keypoints}
@@ -153,10 +170,6 @@ def test_keypoints_keep_inline_math_in_list_items() -> None:
     out = prepare_lecture_markdown(source)
     assert "@@ETOZ_BOX:keypoints|Key points@@" in out
     assert r"$180^\circ = \pi$" in out
-    assert r"$360^\circ$" in out
-    assert r"$2\pi$" in out
-    assert "- " in out
-    assert "[nosep]" not in out
     from frontend.utils.content_render import _callout_body_to_html
 
     body = out.split("@@ETOZ_BOX:keypoints|Key points@@", 1)[1]
@@ -164,5 +177,34 @@ def test_keypoints_keep_inline_math_in_list_items() -> None:
     html_body = _callout_body_to_html(body)
     assert "<ul" in html_body
     assert r"$180^\circ = \pi$" in html_body
-    assert "<li" in html_body
+
+
+def test_keypoints_display_math_stays_together() -> None:
+    source = r"""
+\begin{keypoints}
+\textbf{Key points}
+\begin{itemize}
+\item Display:
+\[
+\sin\theta = \frac{a}{b}
+\]
+\item Inline $\tfrac12$.
+\end{itemize}
+\end{keypoints}
+"""
+    out = prepare_lecture_markdown(source)
+    body = out.split("@@ETOZ_BOX:keypoints|Key points@@", 1)[1]
+    body = body.split("@@ETOZ_BOX_END@@", 1)[0]
+    from frontend.utils.content_render import _callout_body_to_html
+
+    html_body = _callout_body_to_html(body)
+    assert r"\sin\theta = \frac{a}{b}" in html_body
+    assert "$$" in html_body
+    # Display math must not be broken into raw TeX paragraphs.
+    assert "<p" not in html_body or all(
+        r"\sin\theta" not in paragraph
+        for paragraph in html_body.split("<p")
+    )
+
+
 

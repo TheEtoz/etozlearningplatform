@@ -23,6 +23,8 @@ _BOX_START = re.compile(r"@@ETOZ_BOX:([^|]+)\|((?:(?!@@).)*?)@@")
 _BOX_END = "@@ETOZ_BOX_END@@"
 _TIKZ_START = "@@ETOZ_TIKZ@@"
 _TIKZ_END = "@@ETOZ_TIKZ_END@@"
+_TABLE_START = "@@ETOZ_TABLE@@"
+_TABLE_END = "@@ETOZ_TABLE_END@@"
 
 _BOX_STYLES: dict[str, tuple[str, str, str]] = {
     # env: (accent, background, title color)
@@ -481,7 +483,17 @@ def _inline_markdown_to_html(text: str) -> str:
 def _callout_body_to_html(body: str) -> str:
     """Turn converted lecture-box markdown into HTML lists/paragraphs."""
 
-    lines = (body or "").splitlines()
+    text = body or ""
+    # Keep display-math blocks intact across newlines.
+    display_blocks: list[str] = []
+
+    def stash_display(match: re.Match[str]) -> str:
+        display_blocks.append(match.group(1).strip())
+        return f"\n\n@@DISP{len(display_blocks) - 1}@@\n\n"
+
+    text = re.sub(r"\$\$(.+?)\$\$", stash_display, text, flags=re.DOTALL)
+
+    lines = text.splitlines()
     html_parts: list[str] = []
     list_type: str | None = None
 
@@ -493,18 +505,32 @@ def _callout_body_to_html(body: str) -> str:
 
     bullet = re.compile(r"^\s*[-*]\s+(.*)$")
     numbered = re.compile(r"^\s*\d+\.\s+(.*)$")
+    disp = re.compile(r"^@@DISP(\d+)@@$")
 
     for raw in lines:
         line = raw.rstrip()
         if not line.strip():
             close_list()
             continue
+        disp_match = disp.match(line.strip())
+        if disp_match:
+            close_list()
+            formula = display_blocks[int(disp_match.group(1))]
+            # Prefer \(...\) style delimiters KaTeX auto-render always handles.
+            html_parts.append(
+                '<div style="margin:0.65rem 0;overflow-x:auto;text-align:center;">'
+                f"$${html.escape(formula)}$$"
+                "</div>"
+            )
+            continue
         bullet_match = bullet.match(line)
         number_match = numbered.match(line)
         if bullet_match:
             if list_type != "ul":
                 close_list()
-                html_parts.append('<ul style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">')
+                html_parts.append(
+                    '<ul style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">'
+                )
                 list_type = "ul"
             html_parts.append(
                 f'<li style="margin:0.35rem 0;line-height:1.55;">'
@@ -514,7 +540,9 @@ def _callout_body_to_html(body: str) -> str:
         if number_match:
             if list_type != "ol":
                 close_list()
-                html_parts.append('<ol style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">')
+                html_parts.append(
+                    '<ol style="margin:0.35rem 0 0.15rem 1.1rem;padding:0;">'
+                )
                 list_type = "ol"
             html_parts.append(
                 f'<li style="margin:0.35rem 0;line-height:1.55;">'
@@ -528,6 +556,93 @@ def _callout_body_to_html(body: str) -> str:
         )
     close_list()
     return "\n".join(html_parts)
+
+
+def _markdown_table_to_html(table_md: str) -> str:
+    """Convert a pipe markdown table (with ``$math$``) into an HTML table."""
+
+    rows: list[list[str]] = []
+    for raw in (table_md or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return ""
+    parts = [
+        '<table style="border-collapse:collapse;width:100%;font-size:0.95rem;">'
+    ]
+    for index, cells in enumerate(rows):
+        parts.append("<tr>")
+        tag = "th" if index == 0 else "td"
+        weight = "700" if index == 0 else "400"
+        bg = "#e2e8f0" if index == 0 else ("#fff" if index % 2 else "#f8fafc")
+        for cell in cells:
+            parts.append(
+                f'<{tag} style="border:1px solid #cbd5e1;padding:0.45rem 0.55rem;'
+                f'text-align:center;background:{bg};font-weight:{weight};">'
+                f"{_inline_markdown_to_html(cell)}</{tag}>"
+            )
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def _katex_document(body_html: str, *, height: int) -> None:
+    """Show a finished HTML fragment with KaTeX already wired up."""
+
+    components.html(
+        f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {{
+      delimiters: [
+        {{left: '$$', right: '$$', display: true}},
+        {{left: '$', right: '$', display: false}}
+      ],
+      throwOnError: false
+    }});"></script>
+  <style>
+    html, body {{
+      margin: 0; padding: 0.15rem 0;
+      font-family: "Source Sans Pro", system-ui, sans-serif;
+      color: #0f172a;
+      background: transparent;
+    }}
+    .katex {{ font-size: 1.05em; }}
+  </style>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+""",
+        height=height,
+        scrolling=True,
+    )
+
+
+def _render_math_table(table_md: str) -> None:
+    try:
+        html_table = _markdown_table_to_html(table_md)
+        if not html_table:
+            return
+        rows = max(1, table_md.count("\n") + 1)
+        height = min(640, max(120, 48 + rows * 36))
+        _katex_document(html_table, height=height)
+    except Exception:
+        st.caption("Table unavailable.")
 
 
 def _render_callout_box(env: str, title: str, body: str) -> None:
@@ -743,7 +858,9 @@ def render_markdown_content(text: str, *, empty_caption: str | None = None) -> N
         rendered_any = False
         cursor = 0
         block_pattern = re.compile(
-            r"(@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@|@@ETOZ_BOX:[^@]+@@.*?@@ETOZ_BOX_END@@)",
+            r"(@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@|"
+            r"@@ETOZ_BOX:[^@]+@@.*?@@ETOZ_BOX_END@@|"
+            r"@@ETOZ_TABLE@@.*?@@ETOZ_TABLE_END@@)",
             re.DOTALL,
         )
         for match in block_pattern.finditer(body):
@@ -755,6 +872,10 @@ def render_markdown_content(text: str, *, empty_caption: str | None = None) -> N
                 if block.startswith(_TIKZ_START):
                     tikz_src = block[len(_TIKZ_START) : -len(_TIKZ_END)].strip()
                     _render_tikz(tikz_src)
+                    rendered_any = True
+                elif block.startswith(_TABLE_START):
+                    table_md = block[len(_TABLE_START) : -len(_TABLE_END)].strip()
+                    _render_math_table(table_md)
                     rendered_any = True
                 else:
                     header = _BOX_START.match(block)

@@ -437,11 +437,28 @@ def _stash_box_markers(text: str) -> tuple[str, list[tuple[str, str, str]]]:
     return pattern.sub(repl, text), boxes
 
 
+def _stash_table_markers(text: str) -> tuple[str, list[str]]:
+    """Opaque-stash markdown tables before prose cleanup."""
+
+    tables: list[str] = []
+    pattern = re.compile(
+        r"@@ETOZ_TABLE@@\n?(.*?)@@ETOZ_TABLE_END@@",
+        re.DOTALL,
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        tables.append(match.group(1).strip())
+        return f"@@ETOZ_TABLE_{len(tables) - 1}@@"
+
+    return pattern.sub(repl, text), tables
+
+
 def _restore_render_markers(
     text: str,
     *,
     tikz_blocks: list[str],
     box_blocks: list[tuple[str, str, str]],
+    table_blocks: list[str] | None = None,
 ) -> str:
     """Re-expand opaque placeholders into renderer markers."""
 
@@ -454,6 +471,11 @@ def _restore_render_markers(
         text = text.replace(
             f"@@ETOZ_BOX_{index}@@",
             f"@@ETOZ_BOX:{env}|{title}@@\n{body}\n@@ETOZ_BOX_END@@",
+        )
+    for index, table in enumerate(table_blocks or []):
+        text = text.replace(
+            f"@@ETOZ_TABLE_{index}@@",
+            f"@@ETOZ_TABLE@@\n{table}\n@@ETOZ_TABLE_END@@",
         )
     return text
 
@@ -604,15 +626,28 @@ def _convert_tabular(text: str) -> str:
 
     def repl(match: re.Match[str]) -> str:
         inner = match.group(1).strip()
-        inner = inner.replace("\\hline", "")
-        rows = [row.strip() for row in re.split(r"\\\\", inner) if row.strip()]
+        inner = re.sub(r"\\hline\b", "", inner)
+        # ``\\[4pt]`` / ``\\[1em]`` are row breaks, not cell text.
+        rows = [
+            row.strip()
+            for row in re.split(r"\\\\(?:\[[^\]]*\])?", inner)
+            if row.strip()
+        ]
         md_rows: list[str] = []
         for index, row in enumerate(rows):
+            # Drop leftover spacing tokens if any survived.
+            row = re.sub(
+                r"^\[(?:\d+(?:\.\d+)?(?:pt|em|ex|mm|cm|in))?\]\s*",
+                "",
+                row,
+            )
+            if not row.strip():
+                continue
             cells = [cell.strip() for cell in row.split("&")]
             md_rows.append("| " + " | ".join(cells) + " |")
             if index == 0:
                 md_rows.append("| " + " | ".join("---" for _ in cells) + " |")
-        return "\n" + "\n".join(md_rows) + "\n"
+        return "\n\n@@ETOZ_TABLE@@\n" + "\n".join(md_rows) + "\n@@ETOZ_TABLE_END@@\n\n"
 
     return pattern.sub(repl, text)
 
@@ -698,6 +733,8 @@ def _cleanup_tex_prose(chunk: str) -> str:
     # Protect opaque / structured markers before destructive cleanup.
     chunk = re.sub(r"@@ETOZ_TIKZ_\d+@@", stash, chunk)
     chunk = re.sub(r"@@ETOZ_BOX_\d+@@", stash, chunk)
+    chunk = re.sub(r"@@ETOZ_TABLE_\d+@@", stash, chunk)
+    chunk = re.sub(r"@@ETOZ_TABLE@@.*?@@ETOZ_TABLE_END@@", stash, chunk, flags=re.DOTALL)
     chunk = re.sub(r"@@ETOZ_FG:[^|]+\|(?:(?!@@).)*?@@", stash, chunk, flags=re.DOTALL)
     chunk = re.sub(r"@@ETOZ_BG:[^|]+\|(?:(?!@@).)*?@@", stash, chunk, flags=re.DOTALL)
     chunk = re.sub(r"@@ETOZ_IMAGE:[^@]+@@", stash, chunk)
@@ -831,8 +868,9 @@ def latex_to_markdown(text: str) -> str:
     ):
         body = _replace_command(body, command, wrapper)
 
-    # Freeze boxes before cleanup so list/colour markup inside them survives.
+    # Freeze boxes/tables before cleanup so markup inside them survives.
     body, box_blocks = _stash_box_markers(body)
+    body, table_blocks = _stash_table_markers(body)
 
     pieces = re.split(r"(```.*?```)", body, flags=re.DOTALL)
     cleaned: list[str] = []
@@ -842,9 +880,12 @@ def latex_to_markdown(text: str) -> str:
         else:
             cleaned.append(_cleanup_tex_prose(piece))
     body = "".join(cleaned)
-    # Re-expand boxes/TikZ first so math placeholders inside notes restore too.
+    # Re-expand boxes/TikZ/tables first so math placeholders inside restore too.
     body = _restore_render_markers(
-        body, tikz_blocks=tikz_blocks, box_blocks=box_blocks
+        body,
+        tikz_blocks=tikz_blocks,
+        box_blocks=box_blocks,
+        table_blocks=table_blocks,
     )
     body = _restore_math(body, math_blocks)
 
