@@ -326,6 +326,21 @@ def _unwrap_env(text: str, env: str) -> str:
     return pattern.sub(r"\n\n\1\n\n", text)
 
 
+def _option_title(options: str | None, default: str) -> str:
+    """Read title=... from LaTeX optional arguments."""
+
+    if not options:
+        return default
+    match = re.search(
+        r"(?:^|,)\s*title\s*=\s*(?:\{([^{}]*)\}|([^,\]]+))",
+        options,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return default
+    return (match.group(1) or match.group(2) or default).strip() or default
+
+
 def _convert_callout_boxes(text: str) -> str:
     """Turn lecture boxes into render markers with a default title."""
 
@@ -333,24 +348,28 @@ def _convert_callout_boxes(text: str) -> str:
         pattern = re.compile(
             r"\\begin\{"
             + re.escape(env)
-            + r"\}(?:\[[^\]]*\])?(.*?)\\end\{"
+            + r"\}(?:\[([^\]]*)\])?(.*?)\\end\{"
             + re.escape(env)
             + r"\}",
             re.DOTALL | re.IGNORECASE,
         )
-        title = _BOX_TITLES.get(env, env.title())
+        default_title = _BOX_TITLES.get(env, env.title())
 
-        def repl(match: re.Match[str], *, env: str = env, title: str = title) -> str:
-            inner = match.group(1).strip("\n")
-            # If the box starts with a bold heading, use it as the title.
-            heading = re.match(
-                r"^\s*\\textbf\{([^{}]+)\}\s*",
-                inner,
-            )
-            box_title = title
+        def repl(
+            match: re.Match[str],
+            *,
+            env: str = env,
+            default_title: str = default_title,
+        ) -> str:
+            options = match.group(1)
+            inner = match.group(2).strip("\n")
+            box_title = _option_title(options, default_title)
+            heading = re.match(r"^\s*\\textbf\{([^{}]+)\}\s*", inner)
             if heading:
-                box_title = heading.group(1).strip() or title
+                box_title = heading.group(1).strip() or box_title
                 inner = inner[heading.end() :]
+            # Avoid marker breakage inside titles.
+            box_title = box_title.replace("|", "/").replace("@@", "")
             return (
                 f"\n\n@@ETOZ_BOX:{env}|{box_title}@@\n"
                 f"{inner.strip()}\n"
@@ -359,42 +378,82 @@ def _convert_callout_boxes(text: str) -> str:
 
         text = pattern.sub(repl, text)
 
-    # Generic tcolorbox — keep as a note-style callout.
     tcb = re.compile(
-        r"\\begin\{tcolorbox\}(?:\[[^\]]*\])?(.*?)\\end\{tcolorbox\}",
+        r"\\begin\{tcolorbox\}(?:\[([^\]]*)\])?(.*?)\\end\{tcolorbox\}",
         re.DOTALL | re.IGNORECASE,
     )
-    text = tcb.sub(
-        lambda match: (
-            "\n\n@@ETOZ_BOX:note|Note@@\n"
-            f"{match.group(1).strip()}\n"
+
+    def tcb_repl(match: re.Match[str]) -> str:
+        title = _option_title(match.group(1), "Note")
+        title = title.replace("|", "/").replace("@@", "")
+        return (
+            f"\n\n@@ETOZ_BOX:note|{title}@@\n"
+            f"{match.group(2).strip()}\n"
             "@@ETOZ_BOX_END@@\n\n"
-        ),
-        text,
-    )
-    return text
+        )
+
+    return tcb.sub(tcb_repl, text)
 
 
-def _extract_tikz(text: str) -> str:
-    """Replace tikzpicture blocks with opaque markers for later HTML render."""
+def _extract_tikz(text: str) -> tuple[str, list[str]]:
+    """Pull tikzpicture blocks out so later passes cannot corrupt them."""
 
+    blocks: list[str] = []
     pattern = re.compile(
         r"\\begin\{tikzpicture\}(?:\[[^\]]*\])?(.*?)\\end\{tikzpicture\}",
         re.DOTALL | re.IGNORECASE,
     )
 
     def repl(match: re.Match[str]) -> str:
-        # Keep full environment so TikZJax sees valid TikZ.
-        full = match.group(0).strip()
-        # Escape marker delimiters that could break splitting.
-        safe = full.replace("@@", "")
-        return f"\n\n@@ETOZ_TIKZ@@\n{safe}\n@@ETOZ_TIKZ_END@@\n\n"
+        full = match.group(0).strip().replace("@@", "")
+        blocks.append(full)
+        return f"\n\n@@ETOZ_TIKZ_{len(blocks) - 1}@@\n\n"
 
-    return pattern.sub(repl, text)
+    return pattern.sub(repl, text), blocks
+
+
+def _stash_box_markers(text: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """Opaque-stash converted boxes before destructive prose cleanup."""
+
+    boxes: list[tuple[str, str, str]] = []
+    pattern = re.compile(
+        r"@@ETOZ_BOX:([^|]+)\|((?:(?!@@).)*?)@@\n?(.*?)@@ETOZ_BOX_END@@",
+        re.DOTALL,
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        boxes.append(
+            (match.group(1).strip(), match.group(2).strip(), match.group(3).strip())
+        )
+        return f"@@ETOZ_BOX_{len(boxes) - 1}@@"
+
+    return pattern.sub(repl, text), boxes
+
+
+def _restore_render_markers(
+    text: str,
+    *,
+    tikz_blocks: list[str],
+    box_blocks: list[tuple[str, str, str]],
+) -> str:
+    """Re-expand opaque placeholders into renderer markers."""
+
+    for index, source in enumerate(tikz_blocks):
+        text = text.replace(
+            f"@@ETOZ_TIKZ_{index}@@",
+            f"@@ETOZ_TIKZ@@\n{source}\n@@ETOZ_TIKZ_END@@",
+        )
+    for index, (env, title, body) in enumerate(box_blocks):
+        text = text.replace(
+            f"@@ETOZ_BOX_{index}@@",
+            f"@@ETOZ_BOX:{env}|{title}@@\n{body}\n@@ETOZ_BOX_END@@",
+        )
+    return text
 
 
 def _unwrap_layout_envs(text: str) -> str:
     for env in (
+        "figure",
         "minipage",
         "turn",
         "sideways",
@@ -629,12 +688,11 @@ def _cleanup_tex_prose(chunk: str) -> str:
         protected.append(match.group(0))
         return f"@@ETOZ_KEEP_{len(protected) - 1}@@"
 
-    # Protect multi-line / structured markers before generic @@…@@ matching.
-    chunk = re.sub(r"@@ETOZ_TIKZ@@.*?@@ETOZ_TIKZ_END@@", stash, chunk, flags=re.DOTALL)
+    # Protect opaque / structured markers before destructive cleanup.
+    chunk = re.sub(r"@@ETOZ_TIKZ_\d+@@", stash, chunk)
+    chunk = re.sub(r"@@ETOZ_BOX_\d+@@", stash, chunk)
     chunk = re.sub(r"@@ETOZ_FG:[^|]+\|(?:(?!@@).)*?@@", stash, chunk, flags=re.DOTALL)
     chunk = re.sub(r"@@ETOZ_BG:[^|]+\|(?:(?!@@).)*?@@", stash, chunk, flags=re.DOTALL)
-    chunk = re.sub(r"@@ETOZ_BOX:[^@]+@@", stash, chunk)
-    chunk = re.sub(r"@@ETOZ_BOX_END@@", stash, chunk)
     chunk = re.sub(r"@@ETOZ_IMAGE:[^@]+@@", stash, chunk)
     chunk = re.sub(r"@@ETOZ_MATH_\d+@@", stash, chunk)
     # Streamlit colour directives :red[…] / :blue-background[…]
@@ -722,12 +780,14 @@ def latex_to_markdown(text: str) -> str:
     body = re.sub(r"\\clearpage\b", "\n\n---\n\n", body)
     body = re.sub(r"\\setcounter\{[^}]*\}\{[^}]*\}", "", body)
     body = re.sub(r"\\definecolor\{[^{}]+\}\{[^{}]+\}\{[^{}]*\}", "", body)
+    # Keep \\usetikzlibrary inside extracted TikZ only; drop preamble uses.
     body = re.sub(r"\\usetikzlibrary\{[^{}]*\}", "", body)
 
-    # TikZ first (opaque), then callout boxes, then layout unwraps.
-    body = _extract_tikz(body)
-    body = _convert_callout_boxes(body)
+    # Layout unwrap (incl. figure) before pulling diagrams out.
     body = _unwrap_layout_envs(body)
+    # TikZ must leave the main stream entirely — math/cleanup corrupts $…$ nodes.
+    body, tikz_blocks = _extract_tikz(body)
+    body = _convert_callout_boxes(body)
 
     body = _convert_env_blocks(body, "lstlisting", "java")
     body = _convert_env_blocks(body, "verbatim", "")
@@ -764,6 +824,9 @@ def latex_to_markdown(text: str) -> str:
     ):
         body = _replace_command(body, command, wrapper)
 
+    # Freeze boxes before cleanup so list/colour markup inside them survives.
+    body, box_blocks = _stash_box_markers(body)
+
     pieces = re.split(r"(```.*?```)", body, flags=re.DOTALL)
     cleaned: list[str] = []
     for index, piece in enumerate(pieces):
@@ -772,6 +835,10 @@ def latex_to_markdown(text: str) -> str:
         else:
             cleaned.append(_cleanup_tex_prose(piece))
     body = "".join(cleaned)
+    # Re-expand boxes/TikZ first so math placeholders inside notes restore too.
+    body = _restore_render_markers(
+        body, tikz_blocks=tikz_blocks, box_blocks=box_blocks
+    )
     body = _restore_math(body, math_blocks)
 
     body = re.sub(r"\n{3,}", "\n\n", body)

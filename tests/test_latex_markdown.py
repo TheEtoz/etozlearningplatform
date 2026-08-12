@@ -107,16 +107,21 @@ def test_tikzpicture_becomes_marker() -> None:
     source = r"""
 \documentclass{article}
 \begin{document}
+\begin{figure}[h]
 \begin{tikzpicture}
+\draw[->] (-1,0) -- (3,0) node[right] {$x$};
 \draw (0,0) -- (1,1);
 \end{tikzpicture}
+\end{figure}
 \end{document}
 """
     out = prepare_lecture_markdown(source)
     assert "@@ETOZ_TIKZ@@" in out
     assert r"\begin{tikzpicture}" in out
+    assert r"node[right] {$x$}" in out
     assert r"\draw (0,0) -- (1,1);" in out
     assert "@@ETOZ_TIKZ_END@@" in out
+    assert "figure" not in out.lower() or "tikzpicture" in out
 
 
 def test_note_and_warning_boxes() -> None:

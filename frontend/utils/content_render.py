@@ -439,24 +439,37 @@ def _render_callout_box(env: str, title: str, body: str) -> None:
         ("#334155", "#f8fafc", "#0f172a"),
     )
     safe_title = html.escape(title or env.title())
+    uid = abs(hash((env, title, body))) % 10_000_000
+    # Scope styles to this callout so title + body share one visual band.
     st.markdown(
         f"""
-<div style="border-left:4px solid {accent};background:{background};
-padding:0.85rem 1rem 0.35rem 1rem;margin:0.85rem 0 0 0;
-border-radius:0 0.55rem 0 0;">
-<p style="margin:0;font-weight:800;letter-spacing:0.02em;
-color:{title_color};font-size:0.95rem;">{safe_title}</p>
+<style>
+.etoz-box-{uid} {{
+  border-left: 4px solid {accent};
+  background: {background};
+  padding: 0.85rem 1rem;
+  margin: 0.85rem 0;
+  border-radius: 0 0.55rem 0.55rem 0;
+}}
+.etoz-box-{uid} .etoz-box-title {{
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: {title_color};
+  font-size: 0.95rem;
+  margin: 0 0 0.45rem 0;
+}}
+</style>
+<div class="etoz-box-{uid}">
+<div class="etoz-box-title">{safe_title}</div>
 </div>
 """,
         unsafe_allow_html=True,
     )
     if body.strip():
+        # Body rendered as normal Markdown/KaTeX, visually attached via CSS hook.
         st.markdown(
-            f"""
-<div style="border-left:4px solid {accent};background:{background};
-padding:0.15rem 1rem 0.85rem 1rem;margin:0 0 0.85rem 0;
-border-radius:0 0 0.55rem 0;">
-""",
+            f'<div class="etoz-box-{uid}" style="padding-top:0;margin-top:-0.85rem;'
+            f'border-top-left-radius:0;border-top-right-radius:0;">',
             unsafe_allow_html=True,
         )
         _render_markdown_segments(body)
@@ -464,35 +477,78 @@ border-radius:0 0 0.55rem 0;">
 
 
 def _render_tikz(source: str) -> None:
-    """Compile a TikZ picture in-browser with TikZJax."""
+    """Compile a TikZ picture in-browser (TikZJax) with a visible fallback."""
 
-    # TikZJax expects a script type="text/tikz" containing the picture.
     safe = source.strip()
     if not safe:
         return
-    # Escape </script> so the HTML document cannot break out.
+    if not safe.lstrip().startswith(r"\begin{tikzpicture}"):
+        safe = "\\begin{tikzpicture}\n" + safe + "\n\\end{tikzpicture}"
     safe = safe.replace("</script>", "<\\/script>")
+    uses_pgfplots = bool(
+        re.search(r"\\begin\{axis\}|\\addplot\b|\\pgfplotsset\b", safe)
+    )
+    if uses_pgfplots:
+        st.info(
+            "This diagram uses pgfplots/axis features. Simple TikZ shapes render "
+            "here; for full pgfplots graphs, export the figure as PNG/SVG and add "
+            "it with an image / Multimedia block."
+        )
+    # Estimate height from drawing complexity; keep room for axes/labels.
+    lines = max(8, safe.count("\n") + 1)
+    height = min(720, max(280, 40 * min(lines, 14)))
     components.html(
         f"""
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8" />
   <link rel="stylesheet" type="text/css"
         href="https://tikzjax.com/v1/fonts.css">
   <script src="https://tikzjax.com/v1/tikzjax.js"></script>
   <style>
-    body {{ margin: 0; padding: 0.5rem 0; background: transparent; }}
+    html, body {{
+      margin: 0; padding: 8px 4px; background: #fff;
+      font-family: system-ui, sans-serif;
+    }}
+    #status {{
+      color: #64748b; font-size: 13px; margin-bottom: 6px;
+    }}
+    #status.err {{ color: #b91c1c; }}
     svg {{ max-width: 100%; height: auto; display: block; margin: 0 auto; }}
   </style>
 </head>
 <body>
-  <script type="text/tikz">
+  <div id="status">Rendering diagram…</div>
+  <div id="host">
+    <script type="text/tikz">
 {safe}
+    </script>
+  </div>
+  <script>
+    (function () {{
+      var status = document.getElementById("status");
+      var host = document.getElementById("host");
+      function done(ok, msg) {{
+        if (!status) return;
+        if (ok) {{ status.style.display = "none"; return; }}
+        status.className = "err";
+        status.textContent = msg || "Could not render this TikZ diagram.";
+      }}
+      document.addEventListener("tikzjax-load-finished", function () {{
+        done(!!host.querySelector("svg"), "TikZ finished without an SVG output.");
+      }});
+      setTimeout(function () {{
+        if (!host.querySelector("svg")) {{
+          done(false, "Diagram timed out or uses unsupported TikZ features (e.g. some pgfplots).");
+        }}
+      }}, 12000);
+    }})();
   </script>
 </body>
 </html>
 """,
-        height=360,
+        height=height,
         scrolling=True,
     )
 
